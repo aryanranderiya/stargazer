@@ -3,8 +3,12 @@ package github
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
+	"math/rand"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -13,6 +17,50 @@ import (
 )
 
 const apiBase = "https://api.github.com"
+
+// retryableError wraps errors that should trigger a retry (HTTP 5xx server errors).
+type retryableError struct {
+	statusCode int
+	err        error
+}
+
+func (e *retryableError) Error() string { return e.err.Error() }
+func (e *retryableError) Unwrap() error { return e.err }
+
+// retryWithBackoff calls fn up to 5 times (1 initial + 4 retries) with
+// exponential backoff starting at 500 ms, doubling each attempt, and ±25% jitter.
+// It only retries on *retryableError (HTTP 5xx) or net.Error with Timeout().
+func retryWithBackoff(fn func() error) error {
+	const maxAttempts = 5
+	const baseDelay = 500 * time.Millisecond
+
+	var err error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		err = fn()
+		if err == nil {
+			return nil
+		}
+
+		// Decide whether this error is retryable.
+		var re *retryableError
+		var netErr net.Error
+		isRetryable := errors.As(err, &re) ||
+			(errors.As(err, &netErr) && netErr.Timeout()) ||
+			strings.Contains(err.Error(), "timeout") ||
+			strings.Contains(err.Error(), "connection refused") ||
+			strings.Contains(err.Error(), "EOF")
+
+		if !isRetryable || attempt == maxAttempts-1 {
+			return err
+		}
+
+		// Compute delay: base * 2^attempt, then ±25% jitter.
+		delay := time.Duration(float64(baseDelay) * math.Pow(2, float64(attempt)))
+		jitter := time.Duration(float64(delay) * 0.25 * (2*rand.Float64() - 1))
+		time.Sleep(delay + jitter)
+	}
+	return err
+}
 
 // tokenSlot tracks per-token timing so that the delay is applied independently
 // per token rather than globally. With N tokens the effective throughput is N×.
@@ -87,6 +135,74 @@ type PushPayload struct {
 			Name  string `json:"name"`
 		} `json:"author"`
 	} `json:"commits"`
+}
+
+// RateLimitResource holds the limit/remaining/reset for one rate-limit bucket.
+type RateLimitResource struct {
+	Limit     int
+	Remaining int
+	Reset     time.Time
+}
+
+// RateLimitStatus holds the rate-limit state for all buckets for one token.
+type RateLimitStatus struct {
+	Core    RateLimitResource
+	Search  RateLimitResource
+	GraphQL RateLimitResource
+	Token   string // masked: show only last 4 chars, or "anonymous"
+}
+
+// GetRateLimit fetches rate limit info for a specific token (bypasses throttle).
+func (c *Client) GetRateLimit(token string) (*RateLimitStatus, error) {
+	url := apiBase + "/rate_limit"
+	var raw struct {
+		Resources struct {
+			Core    struct{ Limit, Remaining, Reset int } `json:"core"`
+			Search  struct{ Limit, Remaining, Reset int } `json:"search"`
+			Graphql struct{ Limit, Remaining, Reset int } `json:"graphql"`
+		} `json:"resources"`
+	}
+	if err := c.doRequest(url, "", token, &raw); err != nil {
+		return nil, err
+	}
+	mask := "anonymous"
+	if token != "" {
+		if len(token) >= 4 {
+			mask = "…" + token[len(token)-4:]
+		} else {
+			mask = "…"
+		}
+	}
+	conv := func(r struct{ Limit, Remaining, Reset int }) RateLimitResource {
+		return RateLimitResource{r.Limit, r.Remaining, time.Unix(int64(r.Reset), 0)}
+	}
+	return &RateLimitStatus{
+		Core:    conv(raw.Resources.Core),
+		Search:  conv(raw.Resources.Search),
+		GraphQL: conv(raw.Resources.Graphql),
+		Token:   mask,
+	}, nil
+}
+
+// ProbeAllTokens concurrently fetches rate limits for every token slot.
+func (c *Client) ProbeAllTokens() []RateLimitStatus {
+	tokens := c.tokens
+	if len(tokens) == 0 {
+		tokens = []string{""}
+	}
+	results := make([]RateLimitStatus, len(tokens))
+	var wg sync.WaitGroup
+	for i, tok := range tokens {
+		wg.Add(1)
+		go func(idx int, t string) {
+			defer wg.Done()
+			if s, err := c.GetRateLimit(t); err == nil {
+				results[idx] = *s
+			}
+		}(i, tok)
+	}
+	wg.Wait()
+	return results
 }
 
 func NewClient(tokens []string, delay time.Duration) *Client {
@@ -178,6 +294,11 @@ func (c *Client) doRequest(url, accept, token string, v interface{}) error {
 		return fmt.Errorf("not found (404): %s", url)
 	case 422:
 		return fmt.Errorf("unprocessable entity (422)")
+	case 500, 502, 503, 504:
+		return &retryableError{
+			statusCode: resp.StatusCode,
+			err:        fmt.Errorf("HTTP %d for %s", resp.StatusCode, url),
+		}
 	default:
 		return fmt.Errorf("HTTP %d for %s", resp.StatusCode, url)
 	}
@@ -194,7 +315,9 @@ func (c *Client) get(url, accept string, v interface{}) error {
 	var lastErr error
 	for i := 0; i < attempts; i++ {
 		token := c.currentToken()
-		err := c.doRequest(url, accept, token, v)
+		err := retryWithBackoff(func() error {
+			return c.doRequest(url, accept, token, v)
+		})
 		if err == nil {
 			return nil
 		}
@@ -476,51 +599,74 @@ func (c *Client) graphql(query string, v interface{}) error {
 	for i := 0; i < attempts; i++ {
 		token := c.currentToken()
 
-		req, err := http.NewRequest("POST", "https://api.github.com/graphql", bytes.NewReader(body))
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/vnd.github+json")
-		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
+		var result error
+		err := retryWithBackoff(func() error {
+			req, err := http.NewRequest("POST", "https://api.github.com/graphql", bytes.NewReader(body))
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/vnd.github+json")
+			req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+			if token != "" {
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
 
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return err
-		}
+			resp, err := c.httpClient.Do(req)
+			if err != nil {
+				return err
+			}
 
-		if resp.StatusCode == 403 || resp.StatusCode == 429 {
+			if resp.StatusCode == 403 || resp.StatusCode == 429 {
+				resp.Body.Close()
+				// Signal rate-limit to the outer loop via result; not retryable here.
+				result = fmt.Errorf("rate limited (%d)", resp.StatusCode)
+				return nil // stop retryWithBackoff; outer loop handles rotation
+			}
+
+			switch resp.StatusCode {
+			case 500, 502, 503, 504:
+				resp.Body.Close()
+				return &retryableError{
+					statusCode: resp.StatusCode,
+					err:        fmt.Errorf("HTTP %d for graphql", resp.StatusCode),
+				}
+			}
+
+			respBytes, err := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			if err != nil {
+				return err
+			}
+
+			var envelope struct {
+				Data   json.RawMessage `json:"data"`
+				Errors []struct {
+					Message string `json:"message"`
+				} `json:"errors"`
+			}
+			if err := json.Unmarshal(respBytes, &envelope); err != nil {
+				return err
+			}
+			if len(envelope.Errors) > 0 {
+				result = fmt.Errorf("graphql error: %s", envelope.Errors[0].Message)
+				return nil
+			}
+			result = json.Unmarshal(envelope.Data, v)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		if result != nil && strings.HasPrefix(result.Error(), "rate limited") {
 			if len(c.tokens) > 1 {
 				c.rotateToken()
-				lastErr = fmt.Errorf("rate limited (%d)", resp.StatusCode)
+				lastErr = result
 				continue
 			}
-			return fmt.Errorf("rate limited (%d)", resp.StatusCode)
+			return result
 		}
-
-		respBytes, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return err
-		}
-
-		var envelope struct {
-			Data   json.RawMessage `json:"data"`
-			Errors []struct {
-				Message string `json:"message"`
-			} `json:"errors"`
-		}
-		if err := json.Unmarshal(respBytes, &envelope); err != nil {
-			return err
-		}
-		if len(envelope.Errors) > 0 {
-			return fmt.Errorf("graphql error: %s", envelope.Errors[0].Message)
-		}
-		return json.Unmarshal(envelope.Data, v)
+		return result
 	}
 	return fmt.Errorf("all %d token(s) rate-limited: %w", len(c.tokens), lastErr)
 }
@@ -539,16 +685,23 @@ type gqlUser struct {
 	} `json:"followers"`
 	Repositories struct {
 		TotalCount int `json:"totalCount"`
+		Nodes      []struct {
+			NameWithOwner string `json:"nameWithOwner"`
+			IsFork        bool   `json:"isFork"`
+			IsPrivate     bool   `json:"isPrivate"`
+		} `json:"nodes"`
 	} `json:"repositories"`
 	URL string `json:"url"`
 }
 
 // GetUsersBatch fetches up to len(logins) user profiles using GraphQL aliases
-// in chunks of 20 per request. Returns a map of login → *User.
-// Missing/suspended users are silently omitted from the map.
+// in chunks of 20 per request. Returns a map of login → *User and a map of
+// login → []Repo (the user's top 30 repos ordered by most recently pushed).
+// Missing/suspended users are silently omitted from both maps.
 // onProgress is called after each chunk with the count fetched so far.
-func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) map[string]*User {
+func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) (map[string]*User, map[string][]Repo) {
 	result := make(map[string]*User)
+	reposResult := make(map[string][]Repo)
 	const chunkSize = 20
 
 	fetched := 0
@@ -563,7 +716,7 @@ func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) map[string
 		var sb strings.Builder
 		sb.WriteString("query {\n")
 		for i, login := range chunk {
-			fmt.Fprintf(&sb, "  u%d: user(login: %q) { login databaseId name email company location bio followers { totalCount } repositories { totalCount } url }\n", i, login)
+			fmt.Fprintf(&sb, "  u%d: user(login: %q) { login databaseId name email company location bio followers { totalCount } repositories(first: 30, orderBy: {field: PUSHED_AT, direction: DESC}, ownerAffiliations: OWNER) { totalCount nodes { nameWithOwner isFork isPrivate } } url }\n", i, login)
 		}
 		sb.WriteString("}")
 
@@ -598,6 +751,19 @@ func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) map[string
 				HTMLURL:     gu.URL,
 			}
 			result[gu.Login] = u
+
+			// Convert repo nodes to []Repo.
+			if len(gu.Repositories.Nodes) > 0 {
+				repos := make([]Repo, 0, len(gu.Repositories.Nodes))
+				for _, node := range gu.Repositories.Nodes {
+					repos = append(repos, Repo{
+						FullName: node.NameWithOwner,
+						Fork:     node.IsFork,
+						Private:  node.IsPrivate,
+					})
+				}
+				reposResult[gu.Login] = repos
+			}
 		}
 
 		fetched += len(chunk)
@@ -605,7 +771,7 @@ func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) map[string
 			onProgress(fetched)
 		}
 	}
-	return result
+	return result, reposResult
 }
 
 // GetUserOrgs returns the logins of the user's public organizations (up to 10).

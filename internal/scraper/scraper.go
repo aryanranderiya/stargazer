@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"stargazer/internal/cache"
 	gh "stargazer/internal/github"
 )
 
@@ -24,7 +25,8 @@ type Config struct {
 	MaxForkRepos int // max forked repos to scan per user
 	MaxStars     int // 0 = fetch all
 	Delay        time.Duration
-	UseSearchAPI bool // use the GitHub commit search API as a last resort
+	UseSearchAPI bool   // use the GitHub commit search API as a last resort
+	CachePath    string // path for on-disk user profile cache; defaults to $XDG_CONFIG/stargazer/user_cache.json
 }
 
 // Result holds enriched data for one stargazer (written to CSV).
@@ -62,6 +64,9 @@ type Progress struct {
 	// Set when a single user finishes processing.
 	Result *UserResult
 
+	// Populated on the initial rate-limit probe message.
+	RateLimits []gh.RateLimitStatus
+
 	Done  bool
 	Error error
 
@@ -72,12 +77,13 @@ type Progress struct {
 
 // workerCfg bundles per-worker config passed into processUser.
 type workerCfg struct {
-	maxRepos     int
-	maxForkRepos int
-	targetOwner  string
-	targetRepo   string
-	useSearchAPI bool
-	profiles     map[string]*gh.User // pre-fetched profiles; may be nil
+	maxRepos        int
+	maxForkRepos    int
+	targetOwner     string
+	targetRepo      string
+	useSearchAPI    bool
+	profiles        map[string]*gh.User  // pre-fetched profiles; may be nil
+	prefetchedRepos map[string][]gh.Repo // pre-fetched repos via GraphQL; may be nil
 }
 
 var csvHeaders = []string{
@@ -90,6 +96,25 @@ var csvHeaders = []string{
 // Designed to be called in a goroutine.
 func Run(cfg Config, progressCh chan<- Progress) {
 	client := gh.NewClient(cfg.Tokens, cfg.Delay)
+
+	// Resolve cache path.
+	cachePath := cfg.CachePath
+	if cachePath == "" {
+		if configDir, err := os.UserConfigDir(); err == nil {
+			cachePath = filepath.Join(configDir, "stargazer", "user_cache.json")
+		}
+	}
+	userCache, err := cache.Load(cachePath)
+	if err != nil {
+		// Non-fatal: fall back to an in-memory-only cache.
+		userCache, _ = cache.Load("")
+	}
+
+	send(progressCh, Progress{
+		Stage:      "fetching",
+		Status:     "Checking rate limits...",
+		RateLimits: client.ProbeAllTokens(),
+	})
 
 	send(progressCh, Progress{Stage: "fetching", Status: "Connecting to GitHub API..."})
 
@@ -134,9 +159,10 @@ func Run(cfg Config, progressCh chan<- Progress) {
 	workCh := make(chan gh.StarEntry, profileBatchSize*2)
 	resultCh := make(chan Result, profileBatchSize*2)
 
-	// Shared profile cache, written by the prefetcher, read by workers.
+	// Shared profile and repo caches, written by the prefetcher, read by workers.
 	var profileMu sync.RWMutex
 	profiles := make(map[string]*gh.User)
+	prefetchedRepos := make(map[string][]gh.Repo)
 
 	var wg sync.WaitGroup
 	for i := 0; i < cfg.Concurrency; i++ {
@@ -146,12 +172,13 @@ func Run(cfg Config, progressCh chan<- Progress) {
 			for star := range workCh {
 				profileMu.RLock()
 				wcfg := workerCfg{
-					maxRepos:     cfg.MaxRepos,
-					maxForkRepos: cfg.MaxForkRepos,
-					targetOwner:  cfg.Owner,
-					targetRepo:   cfg.Repo,
-					useSearchAPI: cfg.UseSearchAPI,
-					profiles:     profiles,
+					maxRepos:        cfg.MaxRepos,
+					maxForkRepos:    cfg.MaxForkRepos,
+					targetOwner:     cfg.Owner,
+					targetRepo:      cfg.Repo,
+					useSearchAPI:    cfg.UseSearchAPI,
+					profiles:        profiles,
+					prefetchedRepos: prefetchedRepos,
 				}
 				profileMu.RUnlock()
 				resultCh <- processUser(client, star, wcfg)
@@ -164,31 +191,57 @@ func Run(cfg Config, progressCh chan<- Progress) {
 	// GraphQL profile fetch runs concurrently.
 	go func() {
 		type prefetchResult struct {
-			entries  []gh.StarEntry
-			profiles map[string]*gh.User
+			entries         []gh.StarEntry
+			profiles        map[string]*gh.User
+			prefetchedRepos map[string][]gh.Repo
 		}
 
 		// startPrefetch kicks off an async GraphQL profile fetch for the batch.
+		// Logins already present in userCache are injected directly into profiles
+		// and excluded from the GraphQL request.
 		startPrefetch := func(batch []gh.StarEntry) <-chan prefetchResult {
 			ch := make(chan prefetchResult, 1)
 			// Copy the slice so the caller can reset its batch buffer.
 			entries := make([]gh.StarEntry, len(batch))
 			copy(entries, batch)
 			go func() {
-				logins := make([]string, len(entries))
-				for i, s := range entries {
-					logins[i] = s.User.Login
+				// Separate cached from uncached logins.
+				var needFetch []string
+				cached := make(map[string]*gh.User)
+				for _, s := range entries {
+					if u, ok := userCache.Get(s.User.Login); ok {
+						cached[s.User.Login] = u
+					} else {
+						needFetch = append(needFetch, s.User.Login)
+					}
 				}
+
+				// Inject cached profiles.
+				profileMu.Lock()
+				for k, v := range cached {
+					profiles[k] = v
+				}
+				profileMu.Unlock()
+
+				// Fetch only the uncached logins.
+				fetched := make(map[string]*gh.User)
+				fetchedRepos := make(map[string][]gh.Repo)
+				if len(needFetch) > 0 {
+					fetched, fetchedRepos = client.GetUsersBatch(needFetch, nil)
+					userCache.SetMany(fetched)
+				}
+
 				ch <- prefetchResult{
-					entries:  entries,
-					profiles: client.GetUsersBatch(logins, nil),
+					entries:         entries,
+					profiles:        fetched,
+					prefetchedRepos: fetchedRepos,
 				}
 			}()
 			return ch
 		}
 
-		// dispatchPrefetched waits for a prefetch to complete, merges profiles,
-		// and sends entries to workers.
+		// dispatchPrefetched waits for a prefetch to complete, merges profiles
+		// and repos, then sends entries to workers.
 		dispatchPrefetched := func(pending <-chan prefetchResult) {
 			if pending == nil {
 				return
@@ -197,6 +250,9 @@ func Run(cfg Config, progressCh chan<- Progress) {
 			profileMu.Lock()
 			for k, v := range res.profiles {
 				profiles[k] = v
+			}
+			for k, v := range res.prefetchedRepos {
+				prefetchedRepos[k] = v
 			}
 			profileMu.Unlock()
 			for _, star := range res.entries {
@@ -297,6 +353,9 @@ func Run(cfg Config, progressCh chan<- Progress) {
 	csvMu.Lock()
 	csvWriter.Flush()
 	csvMu.Unlock()
+
+	// Persist the user profile cache to disk.
+	_ = userCache.Save()
 
 	send(progressCh, Progress{Done: true, OutputPath: outputPath, Count: count})
 }
@@ -424,7 +483,12 @@ func processUser(client *gh.Client, star gh.StarEntry, cfg workerCfg) Result {
 			return
 		}
 		localScanned := copyScanned()
-		repos, _ := client.GetUserRepos(star.User.Login)
+		var repos []gh.Repo
+		if pr, ok := cfg.prefetchedRepos[star.User.Login]; ok && pr != nil {
+			repos = pr
+		} else {
+			repos, _ = client.GetUserRepos(star.User.Login)
+		}
 
 		// 4. Own non-fork repos (most likely to have original commits).
 		if cfg.maxRepos > 0 {

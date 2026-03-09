@@ -16,6 +16,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	gh "stargazer/internal/github"
 	creds "stargazer/internal/credentials"
 	scr "stargazer/internal/scraper"
 )
@@ -180,8 +181,9 @@ type Model struct {
 	count      int
 	elapsed    time.Duration
 
-	errMsg   string
-	repoWarn string
+	errMsg     string
+	repoWarn   string
+	rateLimits []gh.RateLimitStatus
 
 	width  int
 	height int
@@ -378,6 +380,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if p.Status != "" {
 			m.lastStatus = p.Status
+		}
+		if len(p.RateLimits) > 0 {
+			m.rateLimits = p.RateLimits
 		}
 
 		if r := p.Result; r != nil {
@@ -879,6 +884,25 @@ func (m Model) runningView() string {
 			profileCard, "  ", commitCard, "  ", noreplyCard, "  ", errCard,
 		)
 		b.WriteString(statsRow + "\n\n")
+	}
+
+	// Rate limit panel
+	if len(m.rateLimits) > 0 {
+		b.WriteString(sectionDivider("Rate Limits", cw) + "\n")
+		now := time.Now()
+		for i, rl := range m.rateLimits {
+			resetsIn := rl.Core.Reset.Sub(now).Round(time.Minute)
+			var resetStr string
+			if resetsIn <= 0 {
+				resetStr = "now"
+			} else {
+				resetStr = fmt.Sprintf("%dm", int(resetsIn.Minutes()))
+			}
+			line := fmt.Sprintf("  Token %d (%s): Core %d/%d, resets in %s",
+				i+1, rl.Token, rl.Core.Remaining, rl.Core.Limit, resetStr)
+			b.WriteString(dimStyle.Render(line) + "\n")
+		}
+		b.WriteString("\n")
 	}
 
 	// Live results viewport
