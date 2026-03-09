@@ -6,6 +6,8 @@
 
 A terminal UI tool that scrapes GitHub stargazers from any repository, enriches each user with their email address, and exports everything to a CSV file.
 
+> **Minimal by design** — the single self-contained binary is ~7 MB (stripped), with zero runtime dependencies. No daemon, no config file required, no install step beyond dropping the binary in your PATH.
+
 ---
 
 ## How it works
@@ -30,6 +32,12 @@ go install .
 ```
 
 This puts `stargazer` in your `$GOPATH/bin`.
+
+To build a minimal stripped binary (~7 MB):
+
+```sh
+go build -ldflags="-s -w" -o stargazer .
+```
 
 **Or just run it directly:**
 

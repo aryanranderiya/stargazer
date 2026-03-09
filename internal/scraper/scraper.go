@@ -93,10 +93,6 @@ func Run(cfg Config, progressCh chan<- Progress) {
 
 	send(progressCh, Progress{Stage: "fetching", Status: "Connecting to GitHub API..."})
 
-	if cfg.MaxForkRepos == 0 {
-		cfg.MaxForkRepos = 2
-	}
-
 	stars, err := client.GetAllStargazers(cfg.Owner, cfg.Repo, cfg.MaxStars, func(fetched int) {
 		send(progressCh, Progress{
 			Stage:  "fetching",
@@ -248,6 +244,9 @@ func processUser(client *gh.Client, star gh.StarEntry, cfg workerCfg) Result {
 
 	// --- Email resolution fallback chain ---
 
+	// Track repos we've already scanned to avoid duplicate commit lookups.
+	scanned := make(map[string]bool)
+
 	// 1. Public profile email.
 	if gh.IsRealEmail(result.Email) {
 		result.EmailSource = "profile"
@@ -257,6 +256,7 @@ func processUser(client *gh.Client, star gh.StarEntry, cfg workerCfg) Result {
 	// 2. Target repo commits (free – we already know the repo).
 	if cfg.targetOwner != "" && cfg.targetRepo != "" {
 		repoFull := cfg.targetOwner + "/" + cfg.targetRepo
+		scanned[repoFull] = true
 		if email := firstRealEmailInCommits(client, repoFull, star.User.Login); email != "" {
 			result.Email = email
 			result.EmailSource = "commit"
@@ -276,6 +276,10 @@ func processUser(client *gh.Client, star gh.StarEntry, cfg workerCfg) Result {
 			if cap == 0 {
 				break
 			}
+			if scanned[repoName] {
+				continue
+			}
+			scanned[repoName] = true
 			cap--
 			if email := firstRealEmailInCommits(client, repoName, star.User.Login); email != "" {
 				result.Email = email
@@ -285,20 +289,27 @@ func processUser(client *gh.Client, star gh.StarEntry, cfg workerCfg) Result {
 		}
 	}
 
-	// 4. Own non-fork repos (most likely to have original commits).
-	repos, _ := client.GetUserRepos(star.User.Login)
+	// 4 & 5. Own repos + forked repos (skip if both limits are 0).
+	if cfg.maxRepos > 0 || cfg.maxForkRepos > 0 {
+		repos, _ := client.GetUserRepos(star.User.Login)
 
-	if email, src := scanRepos(client, repos, star.User.Login, cfg.maxRepos, false); email != "" {
-		result.Email = email
-		result.EmailSource = src
-		return result
-	}
+		// 4. Own non-fork repos (most likely to have original commits).
+		if cfg.maxRepos > 0 {
+			if email, src := scanRepos(client, repos, star.User.Login, cfg.maxRepos, false, scanned); email != "" {
+				result.Email = email
+				result.EmailSource = src
+				return result
+			}
+		}
 
-	// 5. Forked repos (many users only commit via forks).
-	if email, src := scanRepos(client, repos, star.User.Login, cfg.maxForkRepos, true); email != "" {
-		result.Email = email
-		result.EmailSource = src
-		return result
+		// 5. Forked repos (many users only commit via forks).
+		if cfg.maxForkRepos > 0 {
+			if email, src := scanRepos(client, repos, star.User.Login, cfg.maxForkRepos, true, scanned); email != "" {
+				result.Email = email
+				result.EmailSource = src
+				return result
+			}
+		}
 	}
 
 	// 6. Org repos — scan public repos of the user's organizations.
@@ -315,9 +326,10 @@ func processUser(client *gh.Client, star gh.StarEntry, cfg workerCfg) Result {
 				if repoCap == 0 {
 					break
 				}
-				if repo.Private {
+				if repo.Private || scanned[repo.FullName] {
 					continue
 				}
+				scanned[repo.FullName] = true
 				repoCap--
 				if email := firstRealEmailInCommits(client, repo.FullName, star.User.Login); email != "" {
 					result.Email = email
@@ -343,16 +355,18 @@ func processUser(client *gh.Client, star gh.StarEntry, cfg workerCfg) Result {
 	return result
 }
 
-// scanRepos checks commits across repos of the given fork/non-fork type.
-func scanRepos(client *gh.Client, repos []gh.Repo, login string, maxRepos int, wantFork bool) (string, string) {
+// scanRepos checks commits across repos of the given fork/non-fork type,
+// skipping any repos already present in the scanned set.
+func scanRepos(client *gh.Client, repos []gh.Repo, login string, maxRepos int, wantFork bool, scanned map[string]bool) (string, string) {
 	checked := 0
 	for _, repo := range repos {
 		if checked >= maxRepos {
 			break
 		}
-		if repo.Fork != wantFork || repo.Private {
+		if repo.Fork != wantFork || repo.Private || scanned[repo.FullName] {
 			continue
 		}
+		scanned[repo.FullName] = true
 		if email := firstRealEmailInCommits(client, repo.FullName, login); email != "" {
 			return email, "commit"
 		}

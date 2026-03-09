@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	colorful "github.com/lucasb-eyer/go-colorful"
+
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -32,42 +34,63 @@ const (
 )
 
 // --------------------------------------------------------------------------
+// Color palette
+// --------------------------------------------------------------------------
+
+var (
+	clrPrimary  = lipgloss.Color("#7C3AED")
+	clrIndigo   = lipgloss.Color("#4F46E5")
+	clrSuccess  = lipgloss.Color("#10B981")
+	clrWarning  = lipgloss.Color("#F59E0B")
+	clrDanger   = lipgloss.Color("#EF4444")
+	clrMuted    = lipgloss.Color("#6B7280")
+	clrSubtle   = lipgloss.Color("#9CA3AF")
+	clrCyan     = lipgloss.Color("#06B6D4")
+	clrHighBg   = lipgloss.Color("#1E1B4B") // deep indigo bg for highlight
+)
+
+// --------------------------------------------------------------------------
 // Styles
 // --------------------------------------------------------------------------
 
 var (
-	purple  = lipgloss.Color("#7C3AED")
-	green   = lipgloss.Color("#10B981")
-	yellow  = lipgloss.Color("#F59E0B")
-	red     = lipgloss.Color("#EF4444")
-	gray    = lipgloss.Color("#6B7280")
-	dimGray = lipgloss.Color("#9CA3AF")
+	// Text styles
+	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(clrPrimary)
+	subtitleStyle = lipgloss.NewStyle().Foreground(clrSubtle).Italic(true)
+	labelStyle  = lipgloss.NewStyle().Foreground(clrMuted)
+	activeLabel = lipgloss.NewStyle().Foreground(clrPrimary).Bold(true)
+	hintStyle   = lipgloss.NewStyle().Foreground(clrSubtle)
+	warnStyle   = lipgloss.NewStyle().Foreground(clrWarning).Bold(true)
+	errorStyle  = lipgloss.NewStyle().Foreground(clrDanger).Bold(true)
+	okStyle     = lipgloss.NewStyle().Foreground(clrSuccess).Bold(true)
+	dimStyle    = lipgloss.NewStyle().Foreground(clrSubtle)
+	cyanStyle   = lipgloss.NewStyle().Foreground(clrCyan)
+	indigoStyle = lipgloss.NewStyle().Foreground(clrIndigo).Bold(true)
 
-	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(purple)
-
-	labelStyle  = lipgloss.NewStyle().Foreground(gray)
-	activeLabel = lipgloss.NewStyle().Foreground(purple).Bold(true)
-	hintStyle   = lipgloss.NewStyle().Foreground(dimGray)
-	warnStyle   = lipgloss.NewStyle().Foreground(yellow)
-	errorStyle  = lipgloss.NewStyle().Foreground(red).Bold(true)
-	okStyle     = lipgloss.NewStyle().Foreground(green).Bold(true)
-	dimStyle    = lipgloss.NewStyle().Foreground(dimGray)
-
-	boxStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(purple).
-			Padding(1, 3)
-
-	headerStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(purple).
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderBottom(true).
-			BorderForeground(gray)
+	// Containers
+	appStyle = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(clrPrimary).
+		Padding(1, 3)
 
 	vpBorderStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(gray)
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(clrMuted)
+
+	statCardStyle = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(clrIndigo).
+		Padding(0, 2)
+
+	errorBoxStyle = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(clrDanger).
+		Padding(0, 2)
+
+	doneBoxStyle = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(clrSuccess).
+		Padding(0, 2)
 )
 
 // --------------------------------------------------------------------------
@@ -84,25 +107,12 @@ func listenProgress(ch <-chan scr.Progress) tea.Cmd {
 
 // --------------------------------------------------------------------------
 // Dynamic field layout constants
-//
-// The logical field ordering is:
-//   0          - repo
-//   1..N       - token fields (dynamic)
-//   N+1        - output CSV path
-//   N+2        - concurrency
-//   N+3        - max repos
-//   N+4        - max stars
-//   N+5        - delay
-//   N+6        - commit search API
-//
-// Config field indices relative to the start of the config section:
 // --------------------------------------------------------------------------
 
 const (
 	maxTokenFields = 10
 	minTokenFields = 1
 
-	// Config section offsets (relative to configStart()).
 	cfgOutputPath   = 0
 	cfgConcurrency  = 1
 	cfgMaxRepos     = 2
@@ -130,7 +140,7 @@ var configLabels = [numConfigFields]string{
 type userResult struct {
 	login       string
 	email       string
-	emailSource string // "profile", "commit", "noreply"
+	emailSource string
 	fetchFailed bool
 }
 
@@ -146,20 +156,19 @@ type runStats struct {
 // --------------------------------------------------------------------------
 
 type Model struct {
-	state   appState
+	state        appState
 	repoInput    textinput.Model
 	tokenInputs  []textinput.Model
 	configInputs [numConfigFields]textinput.Model
-	focused int // logical index: 0=repo, 1..N=tokens, N+1..=config fields
+	focused      int
 
 	spinner     spinner.Model
 	progressBar progress.Model
 	vp          viewport.Model
-	vpContent   string // accumulates result lines for the viewport
+	vpContent   string
 
 	progressCh chan scr.Progress
 
-	// Running state
 	lastStatus  string
 	userResults []userResult
 	stats       runStats
@@ -167,36 +176,30 @@ type Model struct {
 	current     int
 	startTime   time.Time
 
-	// Done state
 	outputPath string
 	count      int
 	elapsed    time.Duration
 
-	// Error state
 	errMsg   string
-	repoWarn string // inline warning below the repo field
+	repoWarn string
 
 	width  int
 	height int
 }
 
-// totalFields returns the current total number of logical fields.
 func (m *Model) totalFields() int {
 	return 1 + len(m.tokenInputs) + numConfigFields
 }
 
-// configStart returns the logical index of the first config field.
 func (m *Model) configStart() int {
 	return 1 + len(m.tokenInputs)
 }
 
-// isTokenFocused returns true when the focused field is one of the token fields.
 func (m *Model) isTokenFocused() bool {
 	f := m.focused
 	return f >= 1 && f <= len(m.tokenInputs)
 }
 
-// tokenLabel returns the display label for the i-th token (0-based).
 func tokenLabel(i int) string {
 	if i == 0 {
 		return "GitHub Token 1   (saved to ~/.config/stargazer/credentials.json)"
@@ -204,7 +207,6 @@ func tokenLabel(i int) string {
 	return fmt.Sprintf("GitHub Token %d", i+1)
 }
 
-// newMaskedInput creates a new masked token textinput.
 func newMaskedInput() textinput.Model {
 	ti := textinput.New()
 	ti.Placeholder = "ghp_..."
@@ -215,17 +217,13 @@ func newMaskedInput() textinput.Model {
 }
 
 func NewModel() Model {
-	// Repo field
 	repoInput := textinput.New()
 	repoInput.Placeholder = "owner/repo"
 	repoInput.SetValue("facebook/react")
 	repoInput.CharLimit = 200
 	repoInput.Focus()
 
-	// Start with one token field; more may be added from creds.
 	var tokenInputs []textinput.Model
-
-	// Config fields
 	var configInputs [numConfigFields]textinput.Model
 
 	configInputs[cfgOutputPath] = textinput.New()
@@ -259,7 +257,6 @@ func NewModel() Model {
 	configInputs[cfgUseSearch].Placeholder = "y or n"
 	configInputs[cfgUseSearch].CharLimit = 1
 
-	// Load saved tokens from credentials file.
 	if c, err := creds.Load(); err == nil && len(c.Tokens) > 0 {
 		count := len(c.Tokens)
 		if count > maxTokenFields {
@@ -271,18 +268,17 @@ func NewModel() Model {
 			tokenInputs = append(tokenInputs, ti)
 		}
 	}
-
-	// Always have at least one token field.
 	if len(tokenInputs) == 0 {
 		tokenInputs = append(tokenInputs, newMaskedInput())
 	}
 
 	sp := spinner.New()
-	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(purple)
+	sp.Spinner = spinner.Points
+	sp.Style = lipgloss.NewStyle().Foreground(clrPrimary)
 
 	pb := progress.New(
-		progress.WithGradient("#7C3AED", "#10B981"),
+		progress.WithGradient("#7C3AED", "#06B6D4"),
+		progress.WithoutPercentage(),
 	)
 
 	vp := viewport.New(80, 10)
@@ -338,7 +334,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.String() == "q" {
 				return m, tea.Quit
 			}
-			// Forward scroll keys to viewport
 			switch msg.String() {
 			case "up", "down", "pgup", "pgdown", "home", "end":
 				var cmd tea.Cmd
@@ -371,7 +366,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.outputPath = p.OutputPath
 			m.count = p.Count
 			m.elapsed = time.Since(m.startTime)
-			// In done state let user scroll from the top
 			m.vp.GotoTop()
 			return m, nil
 		}
@@ -395,7 +389,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.userResults = append(m.userResults, ur)
 
-			// Update running stats
 			switch {
 			case r.FetchFailed:
 				m.stats.failed++
@@ -407,7 +400,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.stats.noreply++
 			}
 
-			// Append line to viewport content and auto-scroll
 			m.vpContent += buildResultLine(ur) + "\n"
 			m.vp.SetContent(m.vpContent)
 			m.vp.GotoBottom()
@@ -435,7 +427,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // Form logic
 // --------------------------------------------------------------------------
 
-// blurAll blurs every input field.
 func (m *Model) blurAll() {
 	m.repoInput.Blur()
 	for i := range m.tokenInputs {
@@ -446,7 +437,6 @@ func (m *Model) blurAll() {
 	}
 }
 
-// focusCurrent focuses the input at m.focused.
 func (m *Model) focusCurrent() {
 	total := m.totalFields()
 	cfgStart := m.configStart()
@@ -464,14 +454,13 @@ func (m *Model) focusCurrent() {
 func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	total := m.totalFields()
 
-	// Handle token add/remove when a token field is focused.
 	if m.isTokenFocused() {
 		switch msg.String() {
 		case "ctrl+n":
 			if len(m.tokenInputs) < maxTokenFields {
 				m.blurAll()
 				m.tokenInputs = append(m.tokenInputs, newMaskedInput())
-				m.focused = len(m.tokenInputs) // point to newly added token (1-based)
+				m.focused = len(m.tokenInputs)
 				m.focusCurrent()
 			}
 			return m, textinput.Blink
@@ -480,7 +469,6 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(m.tokenInputs) > minTokenFields {
 				m.blurAll()
 				m.tokenInputs = m.tokenInputs[:len(m.tokenInputs)-1]
-				// Clamp focused index.
 				if m.focused > len(m.tokenInputs) {
 					m.focused = len(m.tokenInputs)
 				}
@@ -490,7 +478,6 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Recalculate total after any add/remove (in case keys above changed length).
 	total = m.totalFields()
 
 	switch msg.String() {
@@ -516,20 +503,17 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.submit()
 	}
 
-	// Forward keypress to the focused input.
 	var cmd tea.Cmd
 	cfgStart := m.configStart()
 	switch {
 	case m.focused == 0:
 		m.repoInput, cmd = m.repoInput.Update(msg)
-		// Normalise GitHub URLs pasted into the field.
 		raw := m.repoInput.Value()
 		normalised, warn := parseRepoInput(raw)
 		m.repoWarn = warn
 		if normalised != raw {
 			m.repoInput.SetValue(normalised)
 		}
-		// Auto-sync output path when the repo field changes.
 		repo := m.repoInput.Value()
 		parts := strings.SplitN(repo, "/", 2)
 		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
@@ -551,11 +535,8 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// parseRepoInput normalises a GitHub URL or owner/repo string into "owner/repo".
-// Returns the normalised value and a warning message (empty if the format is fine).
 func parseRepoInput(raw string) (string, string) {
 	s := strings.TrimSpace(raw)
-	// Strip common URL prefixes.
 	for _, prefix := range []string{
 		"https://github.com/",
 		"http://github.com/",
@@ -566,7 +547,6 @@ func parseRepoInput(raw string) (string, string) {
 			break
 		}
 	}
-	// Strip trailing .git or trailing slash.
 	s = strings.TrimSuffix(s, ".git")
 	s = strings.TrimSuffix(s, "/")
 	if s == "" {
@@ -576,7 +556,6 @@ func parseRepoInput(raw string) (string, string) {
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 		return s, "Format must be owner/repo (e.g. torvalds/linux)"
 	}
-	// Discard anything after the second segment (e.g. /tree/main).
 	return parts[0] + "/" + parts[1], ""
 }
 
@@ -594,7 +573,6 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Collect non-empty tokens and save to credentials.
 	var tokens []string
 	for _, ti := range m.tokenInputs {
 		if t := strings.TrimSpace(ti.Value()); t != "" {
@@ -659,13 +637,101 @@ func (m Model) View() string {
 	return ""
 }
 
+// sectionDivider renders a styled "── Label ─────────" divider.
+func sectionDivider(label string, width int) string {
+	prefix := "── " + label + " "
+	prefixWidth := lipgloss.Width(prefix)
+	fill := width - prefixWidth - 2
+	if fill < 2 {
+		fill = 2
+	}
+	return lipgloss.NewStyle().Foreground(clrIndigo).Bold(true).Render(
+		prefix + strings.Repeat("─", fill),
+	)
+}
+
+// lerpColor linearly interpolates between two hex colors, returning a hex string.
+func lerpColor(from, to colorful.Color, t float64) string {
+	r := from.R + (to.R-from.R)*t
+	g := from.G + (to.G-from.G)*t
+	b := from.B + (to.B-from.B)*t
+	return colorful.Color{R: r, G: g, B: b}.Hex()
+}
+
+// gradientBanner renders text centered on a full-width gradient background strip.
+// Each cell gets its own interpolated bg color, white bold italic foreground.
+func gradientBanner(text string, width int) string {
+	from, _ := colorful.Hex("#5B21B6") // deep violet
+	to, _ := colorful.Hex("#0E7490")   // deep cyan
+
+	// Build rune slice for the full banner width (spaces + centered text)
+	runes := []rune(strings.Repeat(" ", width))
+	textRunes := []rune(text)
+	offset := (width - len(textRunes)) / 2
+	if offset < 0 {
+		offset = 0
+	}
+	for i, r := range textRunes {
+		if offset+i < len(runes) {
+			runes[offset+i] = r
+		}
+	}
+
+	var sb strings.Builder
+	fg := lipgloss.Color("#F5F3FF")
+	for i, r := range runes {
+		t := float64(i) / float64(max(width-1, 1))
+		bg := lipgloss.Color(lerpColor(from, to, t))
+		sb.WriteString(
+			lipgloss.NewStyle().
+				Background(bg).
+				Foreground(fg).
+				Bold(true).
+				Italic(true).
+				Render(string(r)),
+		)
+	}
+	return sb.String()
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// renderHeader renders the app title banner.
+func renderHeader(width int) string {
+	bannerWidth := width
+	if bannerWidth < 20 {
+		bannerWidth = 20
+	}
+	banner := gradientBanner("  ★  STARGAZER  ", bannerWidth)
+	sub := subtitleStyle.Render("  Extract stargazer emails from any public repository")
+	return banner + "\n" + sub
+}
+
+func (m Model) contentWidth() int {
+	w := m.width - 10 // account for box padding/borders
+	if w < 60 {
+		w = 60
+	}
+	if w > 110 {
+		w = 110
+	}
+	return w
+}
+
 func (m Model) formView() string {
+	cw := m.contentWidth()
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("  GitHub Star Scraper") + "\n")
-	b.WriteString(hintStyle.Render("Scrape stargazers and extract their email addresses") + "\n\n")
+	b.WriteString(renderHeader(cw) + "\n\n")
 
-	// --- Repo field ---
+	// ── Target ──────────────────────────────
+	b.WriteString(sectionDivider("Target", cw) + "\n\n")
+
 	if m.focused == 0 {
 		b.WriteString(activeLabel.Render("▶ Repository (owner/repo)") + "\n")
 	} else {
@@ -673,11 +739,13 @@ func (m Model) formView() string {
 	}
 	b.WriteString(m.repoInput.View() + "\n")
 	if m.repoWarn != "" {
-		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("  ⚠ "+m.repoWarn) + "\n")
+		b.WriteString(warnStyle.Render("  ⚠  " + m.repoWarn) + "\n")
 	}
 	b.WriteString("\n")
 
-	// --- Token fields ---
+	// ── Authentication ──────────────────────
+	b.WriteString(sectionDivider("Authentication", cw) + "\n\n")
+
 	for i, ti := range m.tokenInputs {
 		logicalIdx := i + 1
 		lbl := tokenLabel(i)
@@ -689,28 +757,38 @@ func (m Model) formView() string {
 		b.WriteString(ti.View() + "\n\n")
 	}
 
-	// Token add/remove hint (when any token field is focused).
 	if m.isTokenFocused() {
-		b.WriteString(hintStyle.Render("  Ctrl+N add token  •  Ctrl+X remove last") + "\n\n")
+		b.WriteString(
+			hintStyle.Render("  ") +
+				cyanStyle.Render("Ctrl+N") +
+				hintStyle.Render(" add token  •  ") +
+				cyanStyle.Render("Ctrl+X") +
+				hintStyle.Render(" remove last") +
+				"\n\n",
+		)
 	}
 
-	// Token creation guide hint (always shown after last token field).
-	b.WriteString(hintStyle.Render("  Create tokens at: github.com/settings/tokens  →  Fine-grained or Classic PAT, no special scopes needed for public repos") + "\n\n")
+	// Token hints
+	b.WriteString(hintStyle.Render("  Create tokens at: github.com/settings/tokens  →  No special scopes needed for public repos") + "\n\n")
 
-	// Token count status
 	activeTokens := 0
 	for _, ti := range m.tokenInputs {
 		if strings.TrimSpace(ti.Value()) != "" {
 			activeTokens++
 		}
 	}
-	if activeTokens == 0 {
+	switch {
+	case activeTokens == 0:
 		b.WriteString(warnStyle.Render("  ⚠  No token set – rate limit is 60 req/hr. Large repos will be very slow.") + "\n\n")
-	} else if activeTokens > 1 {
-		b.WriteString(okStyle.Render(fmt.Sprintf("  ✓  %d tokens – will rotate on rate-limit", activeTokens)) + "\n\n")
+	case activeTokens > 1:
+		b.WriteString(okStyle.Render(fmt.Sprintf("  ✓  %d tokens active – will rotate on rate-limit", activeTokens)) + "\n\n")
+	default:
+		b.WriteString(okStyle.Render("  ✓  Token saved") + "\n\n")
 	}
 
-	// --- Config fields ---
+	// ── Configuration ───────────────────────
+	b.WriteString(sectionDivider("Configuration", cw) + "\n\n")
+
 	cfgStart := m.configStart()
 	for i := 0; i < numConfigFields; i++ {
 		logicalIdx := cfgStart + i
@@ -723,111 +801,183 @@ func (m Model) formView() string {
 		b.WriteString(m.configInputs[i].View() + "\n\n")
 	}
 
-	b.WriteString(hintStyle.Render("  Tab / ↑↓ navigate  •  Enter advances field  •  Enter on last field starts scraping  •  Ctrl+C quit"))
+	// Footer hints
+	b.WriteString(strings.Repeat("─", cw) + "\n")
+	b.WriteString(
+		hintStyle.Render("  ") +
+			cyanStyle.Render("Tab / ↑↓") +
+			hintStyle.Render(" navigate  •  ") +
+			cyanStyle.Render("Enter") +
+			hintStyle.Render(" advance  •  ") +
+			cyanStyle.Render("Enter on last field") +
+			hintStyle.Render(" starts scraping  •  ") +
+			cyanStyle.Render("Ctrl+C") +
+			hintStyle.Render(" quit"),
+	)
 
-	return boxStyle.Render(b.String())
+	return appStyle.Render(b.String())
 }
 
 func (m Model) runningView() string {
+	cw := m.contentWidth()
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("  GitHub Star Scraper") + "\n\n")
+	b.WriteString(renderHeader(cw) + "\n\n")
 
 	if m.total == 0 {
-		// Still in fetch stage
-		b.WriteString(m.spinner.View() + "  " + hintStyle.Render(m.lastStatus) + "\n\n")
+		// Fetch stage
+		b.WriteString(
+			m.spinner.View() + "  " +
+				indigoStyle.Render("Fetching stargazers...") + "\n",
+		)
+		if m.lastStatus != "" {
+			b.WriteString(dimStyle.Render("    "+m.lastStatus) + "\n")
+		}
+		b.WriteString("\n")
 	} else {
 		// Processing stage
-		pct := 0.0
-		if m.total > 0 {
-			pct = float64(m.current) / float64(m.total)
-		}
+		pct := float64(m.current) / float64(m.total)
 		elapsed := time.Since(m.startTime).Round(time.Second)
 
-		b.WriteString(m.spinner.View() + "  " + lipgloss.NewStyle().Foreground(purple).Bold(true).Render(
-			fmt.Sprintf("Processing  %d / %d", m.current, m.total),
-		) + "  " + dimStyle.Render(elapsed.String()) + "\n")
-
+		// Progress line
+		pctStr := fmt.Sprintf("%.1f%%", pct*100)
+		b.WriteString(
+			m.spinner.View() + "  " +
+				indigoStyle.Render(fmt.Sprintf("Processing  %d / %d", m.current, m.total)) +
+				"  " + cyanStyle.Render(pctStr) +
+				"  " + dimStyle.Render(elapsed.String()) +
+				"\n",
+		)
 		b.WriteString(m.progressBar.ViewAs(pct) + "\n\n")
 
-		// Stats row
-		b.WriteString(
-			okStyle.Render(fmt.Sprintf("  ✓ profile:%-5d", m.stats.profile)) +
-				okStyle.Render(fmt.Sprintf("commit:%-5d", m.stats.commit)) +
-				warnStyle.Render(fmt.Sprintf("noreply:%-5d", m.stats.noreply)) +
-				errorStyle.Render(fmt.Sprintf("errors:%-4d", m.stats.failed)) +
-				"\n\n",
+		// Stats in a 2x2 grid using JoinHorizontal
+		profileCard := statCardStyle.Render(
+			okStyle.Render("✓ profile") + "\n" +
+				lipgloss.NewStyle().Foreground(clrSuccess).Bold(true).
+					Render(fmt.Sprintf("  %d", m.stats.profile)),
 		)
+		commitCard := statCardStyle.Render(
+			okStyle.Render("✓ commit") + "\n" +
+				lipgloss.NewStyle().Foreground(clrSuccess).Bold(true).
+					Render(fmt.Sprintf("  %d", m.stats.commit)),
+		)
+		noreplyCard := statCardStyle.Render(
+			warnStyle.Render("⚠ noreply") + "\n" +
+				lipgloss.NewStyle().Foreground(clrWarning).Bold(true).
+					Render(fmt.Sprintf("  %d", m.stats.noreply)),
+		)
+		errCard := statCardStyle.Render(
+			errorStyle.Render("✗ errors") + "\n" +
+				lipgloss.NewStyle().Foreground(clrDanger).Bold(true).
+					Render(fmt.Sprintf("  %d", m.stats.failed)),
+		)
+		statsRow := lipgloss.JoinHorizontal(lipgloss.Top,
+			profileCard, "  ", commitCard, "  ", noreplyCard, "  ", errCard,
+		)
+		b.WriteString(statsRow + "\n\n")
 	}
 
 	// Live results viewport
 	if len(m.userResults) > 0 {
-		b.WriteString(hintStyle.Render("  ↑↓ scroll results") + "\n")
+		b.WriteString(sectionDivider("Live Results", cw) + "\n")
+		b.WriteString(hintStyle.Render("  ↑↓ scroll") + "\n")
 		b.WriteString(vpBorderStyle.Render(m.vp.View()) + "\n")
 	}
 
-	b.WriteString("\n" + hintStyle.Render("  q / Ctrl+C to quit"))
+	b.WriteString("\n" +
+		hintStyle.Render("  ") +
+		cyanStyle.Render("q / Ctrl+C") +
+		hintStyle.Render(" to quit"),
+	)
 
-	return boxStyle.Render(b.String())
+	return appStyle.Render(b.String())
 }
 
 func (m Model) doneView() string {
+	cw := m.contentWidth()
 	var b strings.Builder
 
 	mins := int(m.elapsed.Minutes())
 	secs := int(m.elapsed.Seconds()) % 60
 
-	b.WriteString(titleStyle.Render("  GitHub Star Scraper") + "\n\n")
-	b.WriteString(okStyle.Render(fmt.Sprintf("  ✓  Done! Scraped %d stargazers in %dm %ds", m.count, mins, secs)) + "\n\n")
+	b.WriteString(renderHeader(cw) + "\n\n")
 
-	// Email source breakdown table
-	b.WriteString(headerStyle.Render("  Email Sources") + "\n\n")
+	// Done summary box
+	summaryContent := okStyle.Render(fmt.Sprintf("✓  Scraped %s stargazers in %dm %ds",
+		formatCount(m.count), mins, secs))
+	b.WriteString(doneBoxStyle.Render(summaryContent) + "\n\n")
+
+	// Email Sources breakdown
+	b.WriteString(sectionDivider("Email Sources", cw) + "\n\n")
 
 	total := m.count
 	if total == 0 {
 		total = 1
 	}
 
-	renderBar := func(label string, count int, sty lipgloss.Style) string {
+	barWidth := 24
+	renderBar := func(icon, label string, count int, sty lipgloss.Style) string {
 		pct := float64(count) / float64(total)
-		filled := int(pct * 20)
-		bar := strings.Repeat("█", filled) + strings.Repeat("░", 20-filled)
-		return fmt.Sprintf("  %-10s %s  %4d  (%.1f%%)",
+		filled := int(pct * float64(barWidth))
+		if filled > barWidth {
+			filled = barWidth
+		}
+		bar := lipgloss.NewStyle().Foreground(clrPrimary).Render(strings.Repeat("█", filled)) +
+			dimStyle.Render(strings.Repeat("░", barWidth-filled))
+		return fmt.Sprintf("  %s  %-8s  %s  %5d  %s",
+			sty.Render(icon),
 			sty.Render(label),
-			sty.Render(bar),
+			bar,
 			count,
-			pct*100,
+			dimStyle.Render(fmt.Sprintf("(%.1f%%)", pct*100)),
 		)
 	}
 
-	b.WriteString(renderBar("profile", m.stats.profile, okStyle) + "\n")
-	b.WriteString(renderBar("commit", m.stats.commit, okStyle) + "\n")
-	b.WriteString(renderBar("noreply", m.stats.noreply, warnStyle) + "\n")
+	b.WriteString(renderBar("✓", "profile", m.stats.profile, okStyle) + "\n")
+	b.WriteString(renderBar("✓", "commit", m.stats.commit, okStyle) + "\n")
+	b.WriteString(renderBar("⚠", "noreply", m.stats.noreply, warnStyle) + "\n")
 	if m.stats.failed > 0 {
-		b.WriteString(renderBar("errors", m.stats.failed, errorStyle) + "\n")
+		b.WriteString(renderBar("✗", "errors", m.stats.failed, errorStyle) + "\n")
 	}
 
 	b.WriteString("\n")
-	b.WriteString("  Output: " + lipgloss.NewStyle().Foreground(purple).Underline(true).Render(m.outputPath) + "\n\n")
+	b.WriteString(
+		"  " + dimStyle.Render("Output: ") +
+			lipgloss.NewStyle().Foreground(clrCyan).Underline(true).Render(m.outputPath) +
+			"\n\n",
+	)
 
 	// Scrollable full results
-	b.WriteString(hintStyle.Render("  All results (↑↓ / PgUp / PgDn to scroll):") + "\n")
+	b.WriteString(sectionDivider("All Results", cw) + "\n")
+	b.WriteString(hintStyle.Render("  ↑↓ / PgUp / PgDn to scroll") + "\n")
 	b.WriteString(vpBorderStyle.Render(m.vp.View()) + "\n")
 
-	b.WriteString("\n" + hintStyle.Render("  Enter / q / Ctrl+C to exit"))
+	b.WriteString("\n" +
+		hintStyle.Render("  ") +
+		cyanStyle.Render("Enter / q / Ctrl+C") +
+		hintStyle.Render(" to exit"),
+	)
 
-	return boxStyle.Render(b.String())
+	return appStyle.Render(b.String())
 }
 
 func (m Model) errorView() string {
+	cw := m.contentWidth()
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("  GitHub Star Scraper") + "\n\n")
-	b.WriteString(errorStyle.Render("  ✗  Error") + "\n\n")
-	b.WriteString("  " + m.errMsg + "\n\n")
-	b.WriteString(hintStyle.Render("  Enter / q / Ctrl+C to exit"))
+	b.WriteString(renderHeader(cw) + "\n\n")
 
-	return boxStyle.Render(b.String())
+	errContent := errorStyle.Render("✗  Error") + "\n\n" +
+		lipgloss.NewStyle().Foreground(clrSubtle).Render(m.errMsg)
+	b.WriteString(errorBoxStyle.Render(errContent) + "\n\n")
+
+	b.WriteString(
+		hintStyle.Render("  ") +
+			cyanStyle.Render("Enter / q / Ctrl+C") +
+			hintStyle.Render(" to exit"),
+	)
+
+	return appStyle.Render(b.String())
 }
 
 // --------------------------------------------------------------------------
@@ -836,24 +986,28 @@ func (m Model) errorView() string {
 
 func buildResultLine(r userResult) string {
 	var icon string
-	var iconSty, srcSty lipgloss.Style
+	var iconSty, emailSty, srcSty lipgloss.Style
 
 	switch {
 	case r.fetchFailed:
 		icon = "✗"
 		iconSty = errorStyle
+		emailSty = dimStyle
 		srcSty = errorStyle
 	case r.emailSource == "noreply":
 		icon = "⚠"
 		iconSty = warnStyle
+		emailSty = dimStyle
 		srcSty = warnStyle
 	case r.emailSource == "profile":
 		icon = "✓"
 		iconSty = okStyle
+		emailSty = lipgloss.NewStyle().Foreground(clrSuccess)
 		srcSty = dimStyle
 	default: // commit
 		icon = "✓"
-		iconSty = lipgloss.NewStyle().Foreground(green)
+		iconSty = cyanStyle
+		emailSty = cyanStyle
 		srcSty = dimStyle
 	}
 
@@ -864,12 +1018,23 @@ func buildResultLine(r userResult) string {
 		src = "error"
 	}
 
+	loginPart := hintStyle.Render(fmt.Sprintf("%-22s", "@"+r.login))
+	emailPart := emailSty.Render(fmt.Sprintf("%-50s", email))
+	srcPart := srcSty.Render("[" + src + "]")
+
 	return fmt.Sprintf("%s  %s  %s  %s",
 		iconSty.Render(icon),
-		hintStyle.Render(fmt.Sprintf("%-22s", "@"+r.login)),
-		fmt.Sprintf("%-50s", email),
-		srcSty.Render("["+src+"]"),
+		loginPart,
+		emailPart,
+		srcPart,
 	)
+}
+
+func formatCount(n int) string {
+	if n < 1000 {
+		return strconv.Itoa(n)
+	}
+	return fmt.Sprintf("%d,%03d", n/1000, n%1000)
 }
 
 func clampInt(s string, def, min, max int) int {

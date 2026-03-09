@@ -7,11 +7,19 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
 const apiBase = "https://api.github.com"
+
+// tokenSlot tracks per-token timing so that the delay is applied independently
+// per token rather than globally. With N tokens the effective throughput is N×.
+type tokenSlot struct {
+	mu       sync.Mutex
+	lastCall time.Time
+}
 
 // Client is a minimal GitHub REST API client.
 type Client struct {
@@ -19,6 +27,7 @@ type Client struct {
 	tokenIdx   atomic.Int64
 	httpClient *http.Client
 	delay      time.Duration
+	slots      []tokenSlot
 }
 
 // User represents a GitHub user profile.
@@ -81,11 +90,36 @@ type PushPayload struct {
 }
 
 func NewClient(tokens []string, delay time.Duration) *Client {
+	numSlots := len(tokens)
+	if numSlots == 0 {
+		numSlots = 1 // anonymous slot
+	}
 	return &Client{
 		tokens:     tokens,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 		delay:      delay,
+		slots:      make([]tokenSlot, numSlots),
 	}
+}
+
+// throttle sleeps only as long as needed to respect the per-token delay.
+// With N tokens, N concurrent workers can each use a different token slot
+// without blocking each other.
+func (c *Client) throttle() {
+	idx := 0
+	if len(c.tokens) > 0 {
+		idx = int(c.tokenIdx.Load() % int64(len(c.tokens)))
+	}
+	slot := &c.slots[idx]
+	slot.mu.Lock()
+	if c.delay > 0 {
+		elapsed := time.Since(slot.lastCall)
+		if elapsed < c.delay {
+			time.Sleep(c.delay - elapsed)
+		}
+	}
+	slot.lastCall = time.Now()
+	slot.mu.Unlock()
 }
 
 func (c *Client) currentToken() string {
@@ -142,9 +176,7 @@ func (c *Client) doRequest(url, accept, token string, v interface{}) error {
 }
 
 func (c *Client) get(url, accept string, v interface{}) error {
-	if c.delay > 0 {
-		time.Sleep(c.delay)
-	}
+	c.throttle()
 
 	attempts := len(c.tokens)
 	if attempts == 0 {
@@ -308,9 +340,7 @@ func (c *Client) SearchCommitsByAuthor(login string) (string, error) {
 
 // graphql executes a GraphQL POST against the GitHub API, decoding the response Data into v.
 func (c *Client) graphql(query string, v interface{}) error {
-	if c.delay > 0 {
-		time.Sleep(c.delay)
-	}
+	c.throttle()
 
 	attempts := len(c.tokens)
 	if attempts == 0 {
