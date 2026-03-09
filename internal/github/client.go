@@ -95,10 +95,18 @@ func NewClient(tokens []string, delay time.Duration) *Client {
 		numSlots = 1 // anonymous slot
 	}
 	return &Client{
-		tokens:     tokens,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
-		delay:      delay,
-		slots:      make([]tokenSlot, numSlots),
+		tokens: tokens,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 50,
+				IdleConnTimeout:     90 * time.Second,
+				ForceAttemptHTTP2:   true,
+			},
+		},
+		delay: delay,
+		slots: make([]tokenSlot, numSlots),
 	}
 }
 
@@ -236,6 +244,118 @@ func (c *Client) GetAllStargazers(owner, repo string, maxCount int, onPage func(
 		}
 	}
 	return all, nil
+}
+
+// StreamStargazers fetches stargazers concurrently across pages and streams
+// them to the returned channel. The channel is closed when all pages are fetched.
+// onPage is called with the cumulative count so far (may be approximate due to concurrency).
+// errCh receives at most one error; nil if everything succeeded.
+func (c *Client) StreamStargazers(owner, repo string, maxCount int, concurrency int, onPage func(int), errCh chan<- error) <-chan StarEntry {
+	out := make(chan StarEntry, 200)
+
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	if concurrency > 10 {
+		concurrency = 10
+	}
+
+	go func() {
+		defer close(out)
+
+		// We need ordered pages to know when to stop, but we can fetch
+		// multiple pages concurrently by using a sliding window.
+		type pageResult struct {
+			entries []StarEntry
+			err     error
+		}
+
+		var totalSent int
+		var mu sync.Mutex
+		stopped := false
+
+		isStopped := func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return stopped
+		}
+
+		// Use a semaphore to limit concurrent fetches.
+		sem := make(chan struct{}, concurrency)
+		page := 1
+
+		for {
+			if isStopped() {
+				break
+			}
+
+			// Launch a batch of concurrent fetches.
+			batchSize := concurrency
+			results := make([]pageResult, batchSize)
+			var wg sync.WaitGroup
+
+			for i := 0; i < batchSize; i++ {
+				if isStopped() {
+					break
+				}
+				currentPage := page + i
+				wg.Add(1)
+				sem <- struct{}{}
+				go func(idx, pg int) {
+					defer wg.Done()
+					defer func() { <-sem }()
+					entries, err := c.GetStargazersPage(owner, repo, pg)
+					results[idx] = pageResult{entries: entries, err: err}
+				}(i, currentPage)
+			}
+			wg.Wait()
+
+			// Process results in order to detect the last page.
+			for i := 0; i < batchSize; i++ {
+				r := results[i]
+				if r.err != nil {
+					mu.Lock()
+					if totalSent == 0 {
+						errCh <- fmt.Errorf("fetching stargazers: %w", r.err)
+					}
+					stopped = true
+					mu.Unlock()
+					return
+				}
+
+				for _, entry := range r.entries {
+					mu.Lock()
+					if maxCount > 0 && totalSent >= maxCount {
+						stopped = true
+						mu.Unlock()
+						return
+					}
+					totalSent++
+					mu.Unlock()
+					out <- entry
+				}
+
+				if onPage != nil {
+					mu.Lock()
+					onPage(totalSent)
+					mu.Unlock()
+				}
+
+				if len(r.entries) < 100 {
+					mu.Lock()
+					stopped = true
+					mu.Unlock()
+					return
+				}
+			}
+
+			page += batchSize
+		}
+
+		errCh <- nil
+	}()
+
+	return out
 }
 
 // GetUser fetches a full user profile.

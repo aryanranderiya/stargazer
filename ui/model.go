@@ -255,7 +255,7 @@ func NewModel() Model {
 	configInputs[cfgUseSearch] = textinput.New()
 	configInputs[cfgUseSearch].SetValue("n")
 	configInputs[cfgUseSearch].Placeholder = "y or n"
-	configInputs[cfgUseSearch].CharLimit = 1
+	configInputs[cfgUseSearch].CharLimit = 3
 
 	if c, err := creds.Load(); err == nil && len(c.Tokens) > 0 {
 		count := len(c.Tokens)
@@ -562,15 +562,19 @@ func parseRepoInput(raw string) (string, string) {
 func (m Model) submit() (tea.Model, tea.Cmd) {
 	repo, warn := parseRepoInput(m.repoInput.Value())
 	if warn != "" {
-		m.errMsg = warn
-		m.state = stateError
-		return m, nil
+		m.repoWarn = warn
+		m.focused = 0
+		m.blurAll()
+		m.focusCurrent()
+		return m, textinput.Blink
 	}
 	parts := strings.SplitN(repo, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		m.errMsg = "Repository must be in owner/repo format (e.g. facebook/react)"
-		m.state = stateError
-		return m, nil
+		m.repoWarn = "Repository must be in owner/repo format (e.g. facebook/react)"
+		m.focused = 0
+		m.blurAll()
+		m.focusCurrent()
+		return m, textinput.Blink
 	}
 
 	var tokens []string

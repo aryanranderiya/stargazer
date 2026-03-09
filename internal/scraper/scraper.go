@@ -93,42 +93,6 @@ func Run(cfg Config, progressCh chan<- Progress) {
 
 	send(progressCh, Progress{Stage: "fetching", Status: "Connecting to GitHub API..."})
 
-	stars, err := client.GetAllStargazers(cfg.Owner, cfg.Repo, cfg.MaxStars, func(fetched int) {
-		send(progressCh, Progress{
-			Stage:  "fetching",
-			Status: fmt.Sprintf("Fetched %d stargazers...", fetched),
-		})
-	})
-	if err != nil {
-		send(progressCh, Progress{Done: true, Error: fmt.Errorf("fetching stargazers: %w", err)})
-		return
-	}
-
-	total := len(stars)
-	if total == 0 {
-		send(progressCh, Progress{Done: true, OutputPath: cfg.OutputPath, Count: 0})
-		return
-	}
-
-	send(progressCh, Progress{
-		Stage:  "processing",
-		Status: fmt.Sprintf("Found %d stargazers. Starting workers...", total),
-		Total:  total,
-	})
-
-	// Pre-fetch all user profiles in bulk via GraphQL.
-	send(progressCh, Progress{Stage: "fetching", Status: "Pre-fetching user profiles..."})
-	logins := make([]string, len(stars))
-	for i, s := range stars {
-		logins[i] = s.User.Login
-	}
-	profiles := client.GetUsersBatch(logins, func(done int) {
-		send(progressCh, Progress{
-			Stage:  "fetching",
-			Status: fmt.Sprintf("Pre-fetched %d / %d profiles...", done, total),
-		})
-	})
-
 	dir := filepath.Dir(cfg.OutputPath)
 	if dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -152,17 +116,27 @@ func Run(cfg Config, progressCh chan<- Progress) {
 	}
 	var csvMu sync.Mutex
 
-	wcfg := workerCfg{
-		maxRepos:     cfg.MaxRepos,
-		maxForkRepos: cfg.MaxForkRepos,
-		targetOwner:  cfg.Owner,
-		targetRepo:   cfg.Repo,
-		useSearchAPI: cfg.UseSearchAPI,
-		profiles:     profiles,
-	}
+	// Stream stargazers concurrently — pages are fetched in parallel
+	// and results are streamed as they arrive.
+	fetchErrCh := make(chan error, 1)
+	starCh := client.StreamStargazers(cfg.Owner, cfg.Repo, cfg.MaxStars, cfg.Concurrency, func(fetched int) {
+		send(progressCh, Progress{
+			Stage:  "fetching",
+			Status: fmt.Sprintf("Fetched %d stargazers...", fetched),
+		})
+	}, fetchErrCh)
 
-	workCh := make(chan gh.StarEntry, cfg.Concurrency*2)
-	resultCh := make(chan Result, cfg.Concurrency*2)
+	// Collect stargazers into batches for GraphQL profile pre-fetching,
+	// while simultaneously feeding workers for processing.
+	// We buffer a batch of logins, pre-fetch their profiles, then dispatch to workers.
+	const profileBatchSize = 20
+
+	workCh := make(chan gh.StarEntry, profileBatchSize*2)
+	resultCh := make(chan Result, profileBatchSize*2)
+
+	// Shared profile cache, written by the prefetcher, read by workers.
+	var profileMu sync.RWMutex
+	profiles := make(map[string]*gh.User)
 
 	var wg sync.WaitGroup
 	for i := 0; i < cfg.Concurrency; i++ {
@@ -170,21 +144,128 @@ func Run(cfg Config, progressCh chan<- Progress) {
 		go func() {
 			defer wg.Done()
 			for star := range workCh {
+				profileMu.RLock()
+				wcfg := workerCfg{
+					maxRepos:     cfg.MaxRepos,
+					maxForkRepos: cfg.MaxForkRepos,
+					targetOwner:  cfg.Owner,
+					targetRepo:   cfg.Repo,
+					useSearchAPI: cfg.UseSearchAPI,
+					profiles:     profiles,
+				}
+				profileMu.RUnlock()
 				resultCh <- processUser(client, star, wcfg)
 			}
 		}()
 	}
 
+	// Producer: read from star stream, batch-prefetch profiles, dispatch to workers.
+	// Uses double-buffering: while dispatching batch N to workers, batch N+1's
+	// GraphQL profile fetch runs concurrently.
 	go func() {
-		for _, star := range stars {
-			workCh <- star
+		type prefetchResult struct {
+			entries  []gh.StarEntry
+			profiles map[string]*gh.User
 		}
+
+		// startPrefetch kicks off an async GraphQL profile fetch for the batch.
+		startPrefetch := func(batch []gh.StarEntry) <-chan prefetchResult {
+			ch := make(chan prefetchResult, 1)
+			// Copy the slice so the caller can reset its batch buffer.
+			entries := make([]gh.StarEntry, len(batch))
+			copy(entries, batch)
+			go func() {
+				logins := make([]string, len(entries))
+				for i, s := range entries {
+					logins[i] = s.User.Login
+				}
+				ch <- prefetchResult{
+					entries:  entries,
+					profiles: client.GetUsersBatch(logins, nil),
+				}
+			}()
+			return ch
+		}
+
+		// dispatchPrefetched waits for a prefetch to complete, merges profiles,
+		// and sends entries to workers.
+		dispatchPrefetched := func(pending <-chan prefetchResult) {
+			if pending == nil {
+				return
+			}
+			res := <-pending
+			profileMu.Lock()
+			for k, v := range res.profiles {
+				profiles[k] = v
+			}
+			profileMu.Unlock()
+			for _, star := range res.entries {
+				workCh <- star
+			}
+		}
+
+		var batch []gh.StarEntry
+		var pending <-chan prefetchResult
+		total := 0
+
+		for star := range starCh {
+			total++
+			batch = append(batch, star)
+			if len(batch) >= profileBatchSize {
+				send(progressCh, Progress{
+					Stage:  "processing",
+					Status: fmt.Sprintf("Processing stargazers... (%d fetched so far)", total),
+					Total:  total,
+				})
+				// Start prefetching profiles for this batch asynchronously.
+				newPending := startPrefetch(batch)
+				batch = batch[:0]
+				// Dispatch the previously prefetched batch to workers
+				// (overlaps with the new prefetch running in the background).
+				dispatchPrefetched(pending)
+				pending = newPending
+			}
+		}
+
+		// Start prefetch for any remaining entries.
+		if len(batch) > 0 {
+			newPending := startPrefetch(batch)
+			dispatchPrefetched(pending)
+			pending = newPending
+		}
+		// Dispatch the last prefetched batch.
+		dispatchPrefetched(pending)
+
+		// Check if fetching had an error.
+		if fetchErr := <-fetchErrCh; fetchErr != nil && total == 0 {
+			send(progressCh, Progress{Done: true, Error: fetchErr})
+			close(workCh)
+			wg.Wait()
+			close(resultCh)
+			return
+		}
+
+		if total == 0 {
+			send(progressCh, Progress{Done: true, OutputPath: cfg.OutputPath, Count: 0})
+			close(workCh)
+			wg.Wait()
+			close(resultCh)
+			return
+		}
+
+		send(progressCh, Progress{
+			Stage:  "processing",
+			Status: fmt.Sprintf("All %d stargazers fetched. Processing...", total),
+			Total:  total,
+		})
+
 		close(workCh)
 		wg.Wait()
 		close(resultCh)
 	}()
 
 	count := 0
+	const flushInterval = 50
 	for result := range resultCh {
 		row := []string{
 			result.Login, result.Name, result.Email, result.EmailSource,
@@ -194,14 +275,15 @@ func Run(cfg Config, progressCh chan<- Progress) {
 		}
 		csvMu.Lock()
 		_ = csvWriter.Write(row)
-		csvWriter.Flush()
+		if count%flushInterval == 0 {
+			csvWriter.Flush()
+		}
 		csvMu.Unlock()
 
 		count++
 		send(progressCh, Progress{
 			Stage:   "processing",
 			Current: count,
-			Total:   total,
 			Result: &UserResult{
 				Login:       result.Login,
 				Email:       result.Email,
@@ -210,6 +292,11 @@ func Run(cfg Config, progressCh chan<- Progress) {
 			},
 		})
 	}
+
+	// Final flush to ensure all rows are written.
+	csvMu.Lock()
+	csvWriter.Flush()
+	csvMu.Unlock()
 
 	send(progressCh, Progress{Done: true, OutputPath: outputPath, Count: count})
 }
@@ -253,26 +340,50 @@ func processUser(client *gh.Client, star gh.StarEntry, cfg workerCfg) Result {
 		return result
 	}
 
-	// 2. Target repo commits (free – we already know the repo).
+	// 2 & 3. Target repo commits and event data — fetched concurrently.
+	type commitResult struct{ email string }
+	type eventResult struct {
+		email string
+		repos []string
+		err   error
+	}
+
+	commitCh := make(chan commitResult, 1)
+	eventCh := make(chan eventResult, 1)
+
 	if cfg.targetOwner != "" && cfg.targetRepo != "" {
 		repoFull := cfg.targetOwner + "/" + cfg.targetRepo
 		scanned[repoFull] = true
-		if email := firstRealEmailInCommits(client, repoFull, star.User.Login); email != "" {
-			result.Email = email
-			result.EmailSource = "commit"
-			return result
-		}
+		go func() {
+			commitCh <- commitResult{firstRealEmailInCommits(client, repoFull, star.User.Login)}
+		}()
+	} else {
+		commitCh <- commitResult{}
 	}
 
-	// 3. Event repos — 1 API call; email from payload OR commit scan of repos seen in push events.
-	if eventEmail, eventRepos, evErr := client.GetUserEventData(star.User.Login); evErr == nil {
-		if eventEmail != "" {
-			result.Email = eventEmail
+	go func() {
+		email, repos, err := client.GetUserEventData(star.User.Login)
+		eventCh <- eventResult{email, repos, err}
+	}()
+
+	cr := <-commitCh
+	if cr.email != "" {
+		result.Email = cr.email
+		result.EmailSource = "commit"
+		// Drain event goroutine.
+		<-eventCh
+		return result
+	}
+
+	er := <-eventCh
+	if er.err == nil {
+		if er.email != "" {
+			result.Email = er.email
 			result.EmailSource = "events"
 			return result
 		}
 		cap := 3
-		for _, repoName := range eventRepos {
+		for _, repoName := range er.repos {
 			if cap == 0 {
 				break
 			}
@@ -289,31 +400,59 @@ func processUser(client *gh.Client, star gh.StarEntry, cfg workerCfg) Result {
 		}
 	}
 
-	// 4 & 5. Own repos + forked repos (skip if both limits are 0).
-	if cfg.maxRepos > 0 || cfg.maxForkRepos > 0 {
+	// 4, 5 & 6 — run user repos (steps 4+5) and org repos (step 6) concurrently.
+	// Each goroutine gets its own scanned set so there are no data races.
+	type repoEmailResult struct {
+		email  string
+		source string
+	}
+	parallelCh := make(chan repoEmailResult, 2)
+
+	// Copy scanned set for each goroutine.
+	copyScanned := func() map[string]bool {
+		m := make(map[string]bool, len(scanned))
+		for k, v := range scanned {
+			m[k] = v
+		}
+		return m
+	}
+
+	// Goroutine A: steps 4+5 — own repos then forked repos.
+	go func() {
+		if cfg.maxRepos == 0 && cfg.maxForkRepos == 0 {
+			parallelCh <- repoEmailResult{}
+			return
+		}
+		localScanned := copyScanned()
 		repos, _ := client.GetUserRepos(star.User.Login)
 
 		// 4. Own non-fork repos (most likely to have original commits).
 		if cfg.maxRepos > 0 {
-			if email, src := scanRepos(client, repos, star.User.Login, cfg.maxRepos, false, scanned); email != "" {
-				result.Email = email
-				result.EmailSource = src
-				return result
+			if email, src := scanRepos(client, repos, star.User.Login, cfg.maxRepos, false, localScanned); email != "" {
+				parallelCh <- repoEmailResult{email, src}
+				return
 			}
 		}
 
 		// 5. Forked repos (many users only commit via forks).
 		if cfg.maxForkRepos > 0 {
-			if email, src := scanRepos(client, repos, star.User.Login, cfg.maxForkRepos, true, scanned); email != "" {
-				result.Email = email
-				result.EmailSource = src
-				return result
+			if email, src := scanRepos(client, repos, star.User.Login, cfg.maxForkRepos, true, localScanned); email != "" {
+				parallelCh <- repoEmailResult{email, src}
+				return
 			}
 		}
-	}
 
-	// 6. Org repos — scan public repos of the user's organizations.
-	if orgs, orgErr := client.GetUserOrgs(star.User.Login); orgErr == nil {
+		parallelCh <- repoEmailResult{}
+	}()
+
+	// Goroutine B: step 6 — org repos.
+	go func() {
+		localScanned := copyScanned()
+		orgs, orgErr := client.GetUserOrgs(star.User.Login)
+		if orgErr != nil {
+			parallelCh <- repoEmailResult{}
+			return
+		}
 		orgCap := 2
 		for _, org := range orgs {
 			if orgCap == 0 {
@@ -326,18 +465,32 @@ func processUser(client *gh.Client, star gh.StarEntry, cfg workerCfg) Result {
 				if repoCap == 0 {
 					break
 				}
-				if repo.Private || scanned[repo.FullName] {
+				if repo.Private || localScanned[repo.FullName] {
 					continue
 				}
-				scanned[repo.FullName] = true
+				localScanned[repo.FullName] = true
 				repoCap--
 				if email := firstRealEmailInCommits(client, repo.FullName, star.User.Login); email != "" {
-					result.Email = email
-					result.EmailSource = "commit"
-					return result
+					parallelCh <- repoEmailResult{email, "commit"}
+					return
 				}
 			}
 		}
+		parallelCh <- repoEmailResult{}
+	}()
+
+	// Wait for both goroutines; first real email wins.
+	var firstHit repoEmailResult
+	for i := 0; i < 2; i++ {
+		r := <-parallelCh
+		if r.email != "" && firstHit.email == "" {
+			firstHit = r
+		}
+	}
+	if firstHit.email != "" {
+		result.Email = firstHit.email
+		result.EmailSource = firstHit.source
+		return result
 	}
 
 	// 7. Commit search API (searches ALL public repos on GitHub, separate rate limit).
