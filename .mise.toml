@@ -1,0 +1,10 @@
+[tools]
+go = "1.24"
+
+[tasks.dev]
+description = "Run the app"
+run = "go run ."
+
+[tasks.all]
+description = "Build, test, and vet"
+run = "go build ./... && go vet ./... && go test ./..."

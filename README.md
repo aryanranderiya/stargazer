@@ -1,38 +1,37 @@
 # stargazer
 
-A terminal UI tool that scrapes GitHub stargazers from any repository, enriches each user with their email address, and exports everything to CSV.
+![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?logo=go&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-blue)
+![Terminal UI](https://img.shields.io/badge/UI-BubbleTea-ff69b4)
 
-Built with [BubbleTea](https://github.com/charmbracelet/bubbletea).
-
----
-
-## Requirements
-
-- Go 1.21+
-- A GitHub Personal Access Token (optional but strongly recommended)
+A terminal UI tool that scrapes GitHub stargazers from any repository, enriches each user with their email address, and exports everything to a CSV file.
 
 ---
 
-## Build
+## How it works
+
+1. Fetches every stargazer from the target repo via the GitHub API
+2. For each user, resolves an email through a three-step fallback chain:
+   - **profile** — public email on their GitHub profile
+   - **commit** — git author email from commits on their public non-fork repos
+   - **noreply** — GitHub's deterministic address: `{id}+{login}@users.noreply.github.com`
+3. Writes results to CSV incrementally, so partial results are saved even if the run is interrupted
+
+---
+
+## Install
+
+**From source** (requires Go 1.21+):
 
 ```sh
-git clone <this-repo>
+git clone https://github.com/your-org/stargazer
 cd stargazer
-go mod tidy      # download dependencies (only needed once)
-go build -o stargazer .
+go install .
 ```
 
-This produces a single binary: `./stargazer`
+This puts `stargazer` in your `$GOPATH/bin`.
 
----
-
-## Run
-
-```sh
-./stargazer
-```
-
-Or without building first:
+**Or just run it directly:**
 
 ```sh
 go run .
@@ -42,103 +41,83 @@ go run .
 
 ## Usage
 
-The tool opens a full-screen TUI with three screens.
+```sh
+stargazer
+```
+
+A full-screen TUI opens with three screens:
 
 ### 1. Config form
 
-Navigate fields with **Tab / Shift+Tab** or **↑ / ↓**.
-Press **Enter** to advance to the next field.
-Press **Enter on the last field** to start scraping.
-Press **Ctrl+C** at any time to quit.
+Navigate with **Tab / Shift+Tab** or **↑ / ↓**. Press **Enter** to advance, or **Enter on the last field** to start scraping. **Ctrl+C** quits at any time.
 
 | Field | Default | Description |
 |---|---|---|
-| Repository | `existence-master/Sentient` | Target repo in `owner/repo` format |
-| GitHub Token | _(empty)_ | Personal Access Token — see note below |
-| Output CSV Path | `stars/<repo>-stars.csv` | Path to write results; directory is created automatically |
-| Concurrency | `5` | Number of parallel workers (1–20) |
-| Max Repos per User | `3` | How many of the user's own repos to scan for a commit email (1–10) |
-| Max Stars | `0` | How many stargazers to fetch; `0` means all |
-| Request Delay (ms) | `100` | Pause between API calls in milliseconds |
+| Repository | `facebook/react` | Target repo — paste a full GitHub URL or `owner/repo` |
+| GitHub Token | _(saved)_ | Personal Access Token (strongly recommended) |
+| Output CSV Path | `stars/<owner>/<repo>.csv` | Written incrementally; directory is created automatically |
+| Concurrency | `5` | Parallel workers (1–20) |
+| Max Repos per User | `3` | Own repos to scan for a commit email (1–10) |
+| Max Fork Repos | `0` | Forked repos to scan (0 = none) |
+| Max Stars | `0` | Stargazers to fetch; `0` = all |
+| Request Delay (ms) | `100` | Pause between API calls |
+| Use Search API | off | Use GitHub search API as an additional email source |
+
+> **Tip:** You can paste a full URL like `https://github.com/torvalds/linux` into the Repository field — stargazer will strip it down to `torvalds/linux` automatically.
 
 ### 2. Progress screen
 
-Shows a live progress bar, current user being processed, and a rolling log of recent results. Press **q** or **Ctrl+C** to abort.
+Live progress bar, current user being processed, and a rolling log of recent results. Press **q** or **Ctrl+C** to abort.
 
 ### 3. Done screen
 
-Displays the total count and the path to the CSV file. Press **Enter**, **q**, or **Ctrl+C** to exit.
+Shows total count, elapsed time, and the output CSV path. Press **Enter**, **q**, or **Ctrl+C** to exit.
 
 ---
 
 ## GitHub Token
 
-Without a token the GitHub API allows only **60 requests per hour**, which is not enough for any repo with more than ~20 stars.
+| | Requests/hour |
+|---|---|
+| No token | 60 |
+| Token (no scopes needed) | 5,000 |
 
-A token with no special scopes (just public read access) gives you **5,000 requests per hour**.
+Without a token, a repo with more than ~20 stars will hit the rate limit quickly.
 
-**Create one:**
-GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token
-No scopes need to be checked for public repositories.
+**Create a token:** GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token — no scopes need to be checked for public repos.
+
+Tokens are saved locally and pre-filled on next run.
 
 ---
 
 ## Output CSV
 
-The output file is written incrementally, so partial results are saved even if the run is interrupted.
-
 | Column | Description |
 |---|---|
 | `login` | GitHub username |
 | `name` | Display name |
-| `email` | Best email found (see fallback chain below) |
-| `email_source` | Where the email came from: `profile`, `commit`, or `noreply` |
-| `company` | Company field from GitHub profile |
+| `email` | Best email found |
+| `email_source` | `profile`, `commit`, or `noreply` |
+| `company` | Company field |
 | `location` | Location field |
 | `bio` | Bio field |
 | `followers` | Follower count |
 | `public_repos` | Number of public repositories |
-| `starred_at` | ISO 8601 timestamp when they starred the repo |
+| `starred_at` | ISO 8601 timestamp when they starred |
 | `profile_url` | Link to their GitHub profile |
 
-### Email fallback chain
-
-For each user the tool tries three sources in order:
-
-1. **profile** — the public email on their GitHub profile page
-2. **commit** — the git author email found in commits on their own non-fork repos (scans up to *Max Repos per User* repos)
-3. **noreply** — GitHub's deterministic no-reply address: `{id}+{login}@users.noreply.github.com`
-
-The `email_source` column tells you which source was used for each row.
-
 ---
 
-## Rate limits and performance
+## Performance
 
-| Scenario | Requests per star | Stars before hitting limit (no token) |
-|---|---|---|
-| Profile email found | ~2 | ~30 |
-| Need commit scan (3 repos) | ~8 | ~7 |
+| Scenario | API requests per user |
+|---|---|
+| Profile email found | ~2 |
+| Commit scan (3 repos) | ~8 |
 
-With a token and the default settings (100 ms delay, 5 workers, 3 repos per user) a repo with 1,000 stars takes roughly 5–15 minutes depending on how many users have public profile emails.
+With a token and default settings (5 workers, 100 ms delay, 3 repos/user), a repo with 1,000 stars takes roughly **5–15 minutes** depending on how many users have a public profile email.
 
-To go faster:
-- Lower the delay to `0`
-- Increase concurrency to `10`–`20`
-- Reduce Max Repos per User to `1`
-
----
-
-## Example
-
-Scrape all stars from `torvalds/linux` into `output/linux.csv`, checking up to 2 repos per user:
-
-1. Run `./stargazer`
-2. Set **Repository** to `torvalds/linux`
-3. Set **Output CSV Path** to `output/linux.csv`
-4. Set **Max Repos per User** to `2`
-5. Paste your token into **GitHub Token**
-6. Press Enter through to the last field and confirm
+To go faster: set delay to `0`, concurrency to `10–20`, max repos to `1`.
 
 ---
 
@@ -146,13 +125,13 @@ Scrape all stars from `torvalds/linux` into `output/linux.csv`, checking up to 2
 
 ```
 stargazer/
-├── main.go                    # Entry point – starts the BubbleTea program
-├── go.mod / go.sum            # Module dependencies
+├── main.go                    # Entry point
 ├── internal/
+│   ├── credentials/           # Token persistence
 │   ├── github/
-│   │   └── client.go          # GitHub REST API client (stargazers, users, repos, commits)
+│   │   └── client.go          # GitHub REST API client
 │   └── scraper/
 │       └── scraper.go         # Worker pool, email resolution, CSV writer
 └── ui/
-    └── model.go               # BubbleTea model – form, progress, and done screens
+    └── model.go               # BubbleTea model (form, progress, done screens)
 ```

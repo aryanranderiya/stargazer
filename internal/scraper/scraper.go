@@ -20,7 +20,8 @@ type Config struct {
 	Tokens       []string
 	OutputPath   string
 	Concurrency  int
-	MaxRepos     int // max repos to scan per user when looking for commit email
+	MaxRepos     int // max own (non-fork) repos to scan per user
+	MaxForkRepos int // max forked repos to scan per user
 	MaxStars     int // 0 = fetch all
 	Delay        time.Duration
 	UseSearchAPI bool // use the GitHub commit search API as a last resort
@@ -72,9 +73,11 @@ type Progress struct {
 // workerCfg bundles per-worker config passed into processUser.
 type workerCfg struct {
 	maxRepos     int
+	maxForkRepos int
 	targetOwner  string
 	targetRepo   string
 	useSearchAPI bool
+	profiles     map[string]*gh.User // pre-fetched profiles; may be nil
 }
 
 var csvHeaders = []string{
@@ -89,6 +92,10 @@ func Run(cfg Config, progressCh chan<- Progress) {
 	client := gh.NewClient(cfg.Tokens, cfg.Delay)
 
 	send(progressCh, Progress{Stage: "fetching", Status: "Connecting to GitHub API..."})
+
+	if cfg.MaxForkRepos == 0 {
+		cfg.MaxForkRepos = 2
+	}
 
 	stars, err := client.GetAllStargazers(cfg.Owner, cfg.Repo, cfg.MaxStars, func(fetched int) {
 		send(progressCh, Progress{
@@ -111,6 +118,19 @@ func Run(cfg Config, progressCh chan<- Progress) {
 		Stage:  "processing",
 		Status: fmt.Sprintf("Found %d stargazers. Starting workers...", total),
 		Total:  total,
+	})
+
+	// Pre-fetch all user profiles in bulk via GraphQL.
+	send(progressCh, Progress{Stage: "fetching", Status: "Pre-fetching user profiles..."})
+	logins := make([]string, len(stars))
+	for i, s := range stars {
+		logins[i] = s.User.Login
+	}
+	profiles := client.GetUsersBatch(logins, func(done int) {
+		send(progressCh, Progress{
+			Stage:  "fetching",
+			Status: fmt.Sprintf("Pre-fetched %d / %d profiles...", done, total),
+		})
 	})
 
 	dir := filepath.Dir(cfg.OutputPath)
@@ -138,9 +158,11 @@ func Run(cfg Config, progressCh chan<- Progress) {
 
 	wcfg := workerCfg{
 		maxRepos:     cfg.MaxRepos,
+		maxForkRepos: cfg.MaxForkRepos,
 		targetOwner:  cfg.Owner,
 		targetRepo:   cfg.Repo,
 		useSearchAPI: cfg.UseSearchAPI,
+		profiles:     profiles,
 	}
 
 	workCh := make(chan gh.StarEntry, cfg.Concurrency*2)
@@ -205,8 +227,12 @@ func processUser(client *gh.Client, star gh.StarEntry, cfg workerCfg) Result {
 		ProfileURL: fmt.Sprintf("https://github.com/%s", star.User.Login),
 	}
 
-	user, err := client.GetUser(star.User.Login)
-	if err != nil {
+	var fetchErr error
+	user, hasCached := cfg.profiles[star.User.Login]
+	if !hasCached {
+		user, fetchErr = client.GetUser(star.User.Login)
+	}
+	if fetchErr != nil || user == nil {
 		result.FetchFailed = true
 	} else {
 		result.Name = user.Name
@@ -269,13 +295,40 @@ func processUser(client *gh.Client, star gh.StarEntry, cfg workerCfg) Result {
 	}
 
 	// 5. Forked repos (many users only commit via forks).
-	if email, src := scanRepos(client, repos, star.User.Login, cfg.maxRepos, true); email != "" {
+	if email, src := scanRepos(client, repos, star.User.Login, cfg.maxForkRepos, true); email != "" {
 		result.Email = email
 		result.EmailSource = src
 		return result
 	}
 
-	// 6. Commit search API (searches ALL public repos on GitHub, separate rate limit).
+	// 6. Org repos — scan public repos of the user's organizations.
+	if orgs, orgErr := client.GetUserOrgs(star.User.Login); orgErr == nil {
+		orgCap := 2
+		for _, org := range orgs {
+			if orgCap == 0 {
+				break
+			}
+			orgCap--
+			orgRepos, _ := client.GetOrgRepos(org, 10)
+			repoCap := 2
+			for _, repo := range orgRepos {
+				if repoCap == 0 {
+					break
+				}
+				if repo.Private {
+					continue
+				}
+				repoCap--
+				if email := firstRealEmailInCommits(client, repo.FullName, star.User.Login); email != "" {
+					result.Email = email
+					result.EmailSource = "commit"
+					return result
+				}
+			}
+		}
+	}
+
+	// 7. Commit search API (searches ALL public repos on GitHub, separate rate limit).
 	if cfg.useSearchAPI {
 		if email, err := client.SearchCommitsByAuthor(star.User.Login); err == nil && email != "" {
 			result.Email = email
@@ -284,7 +337,7 @@ func processUser(client *gh.Client, star gh.StarEntry, cfg workerCfg) Result {
 		}
 	}
 
-	// 7. Deterministic GitHub no-reply as absolute last resort.
+	// 8. Deterministic GitHub no-reply as absolute last resort.
 	result.Email = gh.NoReplyEmail(result.ID, result.Login)
 	result.EmailSource = "noreply"
 	return result

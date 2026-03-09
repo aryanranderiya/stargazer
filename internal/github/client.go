@@ -1,8 +1,10 @@
 package github
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -302,6 +304,184 @@ func (c *Client) SearchCommitsByAuthor(login string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// graphql executes a GraphQL POST against the GitHub API, decoding the response Data into v.
+func (c *Client) graphql(query string, v interface{}) error {
+	if c.delay > 0 {
+		time.Sleep(c.delay)
+	}
+
+	attempts := len(c.tokens)
+	if attempts == 0 {
+		attempts = 1
+	}
+
+	body, err := json.Marshal(map[string]string{"query": query})
+	if err != nil {
+		return err
+	}
+
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		token := c.currentToken()
+
+		req, err := http.NewRequest("POST", "https://api.github.com/graphql", bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+
+		if resp.StatusCode == 403 || resp.StatusCode == 429 {
+			resp.Body.Close()
+			if len(c.tokens) > 1 {
+				c.rotateToken()
+				lastErr = fmt.Errorf("rate limited (%d)", resp.StatusCode)
+				continue
+			}
+			return fmt.Errorf("rate limited (%d)", resp.StatusCode)
+		}
+
+		respBytes, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return err
+		}
+
+		var envelope struct {
+			Data   json.RawMessage `json:"data"`
+			Errors []struct {
+				Message string `json:"message"`
+			} `json:"errors"`
+		}
+		if err := json.Unmarshal(respBytes, &envelope); err != nil {
+			return err
+		}
+		if len(envelope.Errors) > 0 {
+			return fmt.Errorf("graphql error: %s", envelope.Errors[0].Message)
+		}
+		return json.Unmarshal(envelope.Data, v)
+	}
+	return fmt.Errorf("all %d token(s) rate-limited: %w", len(c.tokens), lastErr)
+}
+
+// gqlUser is a local struct used to deserialize GraphQL user responses.
+type gqlUser struct {
+	Login      string `json:"login"`
+	DatabaseID int64  `json:"databaseId"`
+	Name       string `json:"name"`
+	Email      string `json:"email"`
+	Company    string `json:"company"`
+	Location   string `json:"location"`
+	Bio        string `json:"bio"`
+	Followers  struct {
+		TotalCount int `json:"totalCount"`
+	} `json:"followers"`
+	Repositories struct {
+		TotalCount int `json:"totalCount"`
+	} `json:"repositories"`
+	URL string `json:"url"`
+}
+
+// GetUsersBatch fetches up to len(logins) user profiles using GraphQL aliases
+// in chunks of 20 per request. Returns a map of login → *User.
+// Missing/suspended users are silently omitted from the map.
+// onProgress is called after each chunk with the count fetched so far.
+func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) map[string]*User {
+	result := make(map[string]*User)
+	const chunkSize = 20
+
+	fetched := 0
+	for start := 0; start < len(logins); start += chunkSize {
+		end := start + chunkSize
+		if end > len(logins) {
+			end = len(logins)
+		}
+		chunk := logins[start:end]
+
+		// Build the GraphQL query with aliases u0, u1, ...
+		var sb strings.Builder
+		sb.WriteString("query {\n")
+		for i, login := range chunk {
+			fmt.Fprintf(&sb, "  u%d: user(login: %q) { login databaseId name email company location bio followers { totalCount } repositories { totalCount } url }\n", i, login)
+		}
+		sb.WriteString("}")
+
+		var data map[string]json.RawMessage
+		if err := c.graphql(sb.String(), &data); err != nil {
+			// Silently skip this chunk on error.
+			if onProgress != nil {
+				fetched += len(chunk)
+				onProgress(fetched)
+			}
+			continue
+		}
+
+		for _, raw := range data {
+			if string(raw) == "null" {
+				continue
+			}
+			var gu gqlUser
+			if err := json.Unmarshal(raw, &gu); err != nil {
+				continue
+			}
+			u := &User{
+				Login:       gu.Login,
+				ID:          gu.DatabaseID,
+				Name:        gu.Name,
+				Email:       gu.Email,
+				Company:     gu.Company,
+				Location:    gu.Location,
+				Bio:         gu.Bio,
+				Followers:   gu.Followers.TotalCount,
+				PublicRepos: gu.Repositories.TotalCount,
+				HTMLURL:     gu.URL,
+			}
+			result[gu.Login] = u
+		}
+
+		fetched += len(chunk)
+		if onProgress != nil {
+			onProgress(fetched)
+		}
+	}
+	return result
+}
+
+// GetUserOrgs returns the logins of the user's public organizations (up to 10).
+func (c *Client) GetUserOrgs(login string) ([]string, error) {
+	url := fmt.Sprintf("%s/users/%s/orgs?per_page=10", apiBase, login)
+	var orgs []struct {
+		Login string `json:"login"`
+	}
+	if err := c.get(url, "", &orgs); err != nil {
+		return nil, err
+	}
+	logins := make([]string, len(orgs))
+	for i, o := range orgs {
+		logins[i] = o.Login
+	}
+	return logins, nil
+}
+
+// GetOrgRepos returns public repos for the org sorted by most recently pushed (up to limit).
+func (c *Client) GetOrgRepos(org string, limit int) ([]Repo, error) {
+	url := fmt.Sprintf("%s/orgs/%s/repos?type=public&sort=pushed&direction=desc&per_page=%d", apiBase, org, limit)
+	var repos []Repo
+	if err := c.get(url, "", &repos); err != nil {
+		return nil, err
+	}
+	return repos, nil
 }
 
 // IsNoReplyEmail returns true for GitHub-generated no-reply addresses.

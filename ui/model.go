@@ -103,19 +103,21 @@ const (
 	minTokenFields = 1
 
 	// Config section offsets (relative to configStart()).
-	cfgOutputPath  = 0
-	cfgConcurrency = 1
-	cfgMaxRepos    = 2
-	cfgMaxStars    = 3
-	cfgDelay       = 4
-	cfgUseSearch   = 5
-	numConfigFields = 6
+	cfgOutputPath   = 0
+	cfgConcurrency  = 1
+	cfgMaxRepos     = 2
+	cfgMaxForkRepos = 3
+	cfgMaxStars     = 4
+	cfgDelay        = 5
+	cfgUseSearch    = 6
+	numConfigFields = 7
 )
 
 var configLabels = [numConfigFields]string{
 	"Output CSV Path",
 	"Concurrency          (parallel workers, 1–20)",
-	"Max Repos per User   (repos to scan for commit email, 1–10)",
+	"Max Repos per User   (own repos to scan for commit email, 1–10)",
+	"Max Fork Repos       (forked repos to scan, 1–5)",
 	"Max Stars            (0 = fetch all)",
 	"Request Delay (ms)   (pause between API calls)",
 	"Commit Search API    (y/n – searches ALL of GitHub, uses separate 30 req/min limit)",
@@ -171,7 +173,8 @@ type Model struct {
 	elapsed    time.Duration
 
 	// Error state
-	errMsg string
+	errMsg   string
+	repoWarn string // inline warning below the repo field
 
 	width  int
 	height int
@@ -237,6 +240,10 @@ func NewModel() Model {
 	configInputs[cfgMaxRepos] = textinput.New()
 	configInputs[cfgMaxRepos].SetValue("3")
 	configInputs[cfgMaxRepos].CharLimit = 3
+
+	configInputs[cfgMaxForkRepos] = textinput.New()
+	configInputs[cfgMaxForkRepos].SetValue("2")
+	configInputs[cfgMaxForkRepos].CharLimit = 3
 
 	configInputs[cfgMaxStars] = textinput.New()
 	configInputs[cfgMaxStars].SetValue("0")
@@ -515,6 +522,13 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case m.focused == 0:
 		m.repoInput, cmd = m.repoInput.Update(msg)
+		// Normalise GitHub URLs pasted into the field.
+		raw := m.repoInput.Value()
+		normalised, warn := parseRepoInput(raw)
+		m.repoWarn = warn
+		if normalised != raw {
+			m.repoInput.SetValue(normalised)
+		}
 		// Auto-sync output path when the repo field changes.
 		repo := m.repoInput.Value()
 		parts := strings.SplitN(repo, "/", 2)
@@ -537,8 +551,42 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// parseRepoInput normalises a GitHub URL or owner/repo string into "owner/repo".
+// Returns the normalised value and a warning message (empty if the format is fine).
+func parseRepoInput(raw string) (string, string) {
+	s := strings.TrimSpace(raw)
+	// Strip common URL prefixes.
+	for _, prefix := range []string{
+		"https://github.com/",
+		"http://github.com/",
+		"github.com/",
+	} {
+		if strings.HasPrefix(s, prefix) {
+			s = strings.TrimPrefix(s, prefix)
+			break
+		}
+	}
+	// Strip trailing .git or trailing slash.
+	s = strings.TrimSuffix(s, ".git")
+	s = strings.TrimSuffix(s, "/")
+	if s == "" {
+		return s, ""
+	}
+	parts := strings.SplitN(s, "/", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return s, "Format must be owner/repo (e.g. torvalds/linux)"
+	}
+	// Discard anything after the second segment (e.g. /tree/main).
+	return parts[0] + "/" + parts[1], ""
+}
+
 func (m Model) submit() (tea.Model, tea.Cmd) {
-	repo := strings.TrimSpace(m.repoInput.Value())
+	repo, warn := parseRepoInput(m.repoInput.Value())
+	if warn != "" {
+		m.errMsg = warn
+		m.state = stateError
+		return m, nil
+	}
 	parts := strings.SplitN(repo, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		m.errMsg = "Repository must be in owner/repo format (e.g. facebook/react)"
@@ -557,6 +605,7 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 
 	concurrency := clampInt(m.configInputs[cfgConcurrency].Value(), 5, 1, 20)
 	maxRepos := clampInt(m.configInputs[cfgMaxRepos].Value(), 3, 1, 10)
+	maxForkRepos := clampInt(m.configInputs[cfgMaxForkRepos].Value(), 2, 1, 5)
 	maxStars := clampInt(m.configInputs[cfgMaxStars].Value(), 0, 0, 10_000_000)
 	delayMs := clampInt(m.configInputs[cfgDelay].Value(), 100, 0, 60_000)
 	useSearch := strings.ToLower(strings.TrimSpace(m.configInputs[cfgUseSearch].Value())) == "y"
@@ -573,6 +622,7 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 		OutputPath:   outputPath,
 		Concurrency:  concurrency,
 		MaxRepos:     maxRepos,
+		MaxForkRepos: maxForkRepos,
 		MaxStars:     maxStars,
 		Delay:        time.Duration(delayMs) * time.Millisecond,
 		UseSearchAPI: useSearch,
@@ -621,7 +671,11 @@ func (m Model) formView() string {
 	} else {
 		b.WriteString(labelStyle.Render("  Repository (owner/repo)") + "\n")
 	}
-	b.WriteString(m.repoInput.View() + "\n\n")
+	b.WriteString(m.repoInput.View() + "\n")
+	if m.repoWarn != "" {
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("  ⚠ "+m.repoWarn) + "\n")
+	}
+	b.WriteString("\n")
 
 	// --- Token fields ---
 	for i, ti := range m.tokenInputs {
