@@ -226,10 +226,10 @@ func NewClient(tokens []string, delay time.Duration) *Client {
 	}
 }
 
-// throttle sleeps only as long as needed to respect the per-token delay.
-// With N tokens, N concurrent workers can each use a different token slot
-// without blocking each other.
-func (c *Client) throttle() {
+// acquireToken atomically selects the current token, throttles its slot,
+// and returns the token string. This ensures the throttle delay is applied
+// to the same slot whose token is actually used for the request.
+func (c *Client) acquireToken() string {
 	idx := 0
 	if len(c.tokens) > 0 {
 		idx = int(c.tokenIdx.Load() % int64(len(c.tokens)))
@@ -244,13 +244,10 @@ func (c *Client) throttle() {
 	}
 	slot.lastCall = time.Now()
 	slot.mu.Unlock()
-}
 
-func (c *Client) currentToken() string {
 	if len(c.tokens) == 0 {
 		return ""
 	}
-	idx := c.tokenIdx.Load() % int64(len(c.tokens))
 	return c.tokens[idx]
 }
 
@@ -305,8 +302,6 @@ func (c *Client) doRequest(url, accept, token string, v interface{}) error {
 }
 
 func (c *Client) get(url, accept string, v interface{}) error {
-	c.throttle()
-
 	attempts := len(c.tokens)
 	if attempts == 0 {
 		attempts = 1
@@ -314,7 +309,10 @@ func (c *Client) get(url, accept string, v interface{}) error {
 
 	var lastErr error
 	for i := 0; i < attempts; i++ {
-		token := c.currentToken()
+		// acquireToken throttles the correct slot and returns the matching token.
+		// Called on every attempt so that after rotation the new token's slot is
+		// properly rate-limited.
+		token := c.acquireToken()
 		err := retryWithBackoff(func() error {
 			return c.doRequest(url, accept, token, v)
 		})
@@ -583,8 +581,6 @@ func (c *Client) SearchCommitsByAuthor(login string) (string, error) {
 
 // graphql executes a GraphQL POST against the GitHub API, decoding the response Data into v.
 func (c *Client) graphql(query string, v interface{}) error {
-	c.throttle()
-
 	attempts := len(c.tokens)
 	if attempts == 0 {
 		attempts = 1
@@ -597,7 +593,8 @@ func (c *Client) graphql(query string, v interface{}) error {
 
 	var lastErr error
 	for i := 0; i < attempts; i++ {
-		token := c.currentToken()
+		// acquireToken throttles the correct slot and returns the matching token.
+		token := c.acquireToken()
 
 		var result error
 		err := retryWithBackoff(func() error {

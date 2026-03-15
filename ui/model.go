@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -125,7 +124,7 @@ const (
 )
 
 var configLabels = [numConfigFields]string{
-	"Output CSV Path",
+	"Output Directory     (CSVs saved as dir/owner/repo.csv)",
 	"Concurrency          (parallel workers, 1–20)",
 	"Max Repos per User   (own repos to scan for commit email, 1–10)",
 	"Max Fork Repos       (forked repos to scan, 1–5)",
@@ -220,17 +219,17 @@ func newMaskedInput() textinput.Model {
 
 func NewModel() Model {
 	repoInput := textinput.New()
-	repoInput.Placeholder = "owner/repo"
+	repoInput.Placeholder = "owner/repo, owner/repo2, ..."
 	repoInput.SetValue("facebook/react")
-	repoInput.CharLimit = 200
+	repoInput.CharLimit = 2000
 	repoInput.Focus()
 
 	var tokenInputs []textinput.Model
 	var configInputs [numConfigFields]textinput.Model
 
 	configInputs[cfgOutputPath] = textinput.New()
-	configInputs[cfgOutputPath].Placeholder = "stars/owner/repo.csv"
-	configInputs[cfgOutputPath].SetValue(filepath.Join("stars", "facebook", "react.csv"))
+	configInputs[cfgOutputPath].Placeholder = "stars/"
+	configInputs[cfgOutputPath].SetValue("stars/")
 	configInputs[cfgOutputPath].CharLimit = 500
 
 	configInputs[cfgConcurrency] = textinput.New()
@@ -238,11 +237,11 @@ func NewModel() Model {
 	configInputs[cfgConcurrency].CharLimit = 3
 
 	configInputs[cfgMaxRepos] = textinput.New()
-	configInputs[cfgMaxRepos].SetValue("3")
+	configInputs[cfgMaxRepos].SetValue("1")
 	configInputs[cfgMaxRepos].CharLimit = 3
 
 	configInputs[cfgMaxForkRepos] = textinput.New()
-	configInputs[cfgMaxForkRepos].SetValue("2")
+	configInputs[cfgMaxForkRepos].SetValue("1")
 	configInputs[cfgMaxForkRepos].CharLimit = 3
 
 	configInputs[cfgMaxStars] = textinput.New()
@@ -370,6 +369,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.elapsed = time.Since(m.startTime)
 			m.vp.GotoTop()
 			return m, nil
+		}
+
+		// Track which repo is being processed.
+		if p.RepoName != "" {
+			m.lastStatus = p.Status
 		}
 
 		if p.Total > 0 {
@@ -519,14 +523,6 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if normalised != raw {
 			m.repoInput.SetValue(normalised)
 		}
-		repo := m.repoInput.Value()
-		parts := strings.SplitN(repo, "/", 2)
-		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
-			cur := m.configInputs[cfgOutputPath].Value()
-			if strings.HasPrefix(cur, "stars") || cur == "" {
-				m.configInputs[cfgOutputPath].SetValue(filepath.Join("stars", parts[0], parts[1]+".csv"))
-			}
-		}
 
 	case m.focused >= 1 && m.focused <= len(m.tokenInputs):
 		idx := m.focused - 1
@@ -540,7 +536,8 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func parseRepoInput(raw string) (string, string) {
+// parseSingleRepo normalises a single repo string (owner/repo or full URL).
+func parseSingleRepo(raw string) (string, string) {
 	s := strings.TrimSpace(raw)
 	for _, prefix := range []string{
 		"https://github.com/",
@@ -564,18 +561,54 @@ func parseRepoInput(raw string) (string, string) {
 	return parts[0] + "/" + parts[1], ""
 }
 
+// parseRepoInput handles comma-separated repos.
+// Returns the normalised string and a warning (empty if OK).
+func parseRepoInput(raw string) (string, string) {
+	segments := strings.Split(raw, ",")
+	var normalised []string
+	for _, seg := range segments {
+		seg = strings.TrimSpace(seg)
+		if seg == "" {
+			continue
+		}
+		n, warn := parseSingleRepo(seg)
+		if warn != "" {
+			return raw, warn
+		}
+		normalised = append(normalised, n)
+	}
+	if len(normalised) == 0 {
+		return "", ""
+	}
+	return strings.Join(normalised, ", "), ""
+}
+
+// parseRepoTargets parses comma-separated repos into RepoTarget slices.
+func parseRepoTargets(raw string) ([]scr.RepoTarget, string) {
+	segments := strings.Split(raw, ",")
+	var targets []scr.RepoTarget
+	for _, seg := range segments {
+		seg = strings.TrimSpace(seg)
+		if seg == "" {
+			continue
+		}
+		n, warn := parseSingleRepo(seg)
+		if warn != "" {
+			return nil, warn
+		}
+		parts := strings.SplitN(n, "/", 2)
+		targets = append(targets, scr.RepoTarget{Owner: parts[0], Repo: parts[1]})
+	}
+	if len(targets) == 0 {
+		return nil, "At least one repository is required"
+	}
+	return targets, ""
+}
+
 func (m Model) submit() (tea.Model, tea.Cmd) {
-	repo, warn := parseRepoInput(m.repoInput.Value())
+	repos, warn := parseRepoTargets(m.repoInput.Value())
 	if warn != "" {
 		m.repoWarn = warn
-		m.focused = 0
-		m.blurAll()
-		m.focusCurrent()
-		return m, textinput.Blink
-	}
-	parts := strings.SplitN(repo, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		m.repoWarn = "Repository must be in owner/repo format (e.g. facebook/react)"
 		m.focused = 0
 		m.blurAll()
 		m.focusCurrent()
@@ -591,22 +624,21 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 	_ = creds.Save(&creds.Credentials{Tokens: tokens})
 
 	concurrency := clampInt(m.configInputs[cfgConcurrency].Value(), 5, 1, 20)
-	maxRepos := clampInt(m.configInputs[cfgMaxRepos].Value(), 3, 1, 10)
-	maxForkRepos := clampInt(m.configInputs[cfgMaxForkRepos].Value(), 2, 1, 5)
+	maxRepos := clampInt(m.configInputs[cfgMaxRepos].Value(), 1, 1, 10)
+	maxForkRepos := clampInt(m.configInputs[cfgMaxForkRepos].Value(), 1, 1, 5)
 	maxStars := clampInt(m.configInputs[cfgMaxStars].Value(), 0, 0, 10_000_000)
 	delayMs := clampInt(m.configInputs[cfgDelay].Value(), 100, 0, 60_000)
 	useSearch := strings.ToLower(strings.TrimSpace(m.configInputs[cfgUseSearch].Value())) == "y"
 
-	outputPath := strings.TrimSpace(m.configInputs[cfgOutputPath].Value())
-	if outputPath == "" {
-		outputPath = filepath.Join("stars", parts[0], parts[1]+".csv")
+	outputDir := strings.TrimSpace(m.configInputs[cfgOutputPath].Value())
+	if outputDir == "" {
+		outputDir = "stars/"
 	}
 
 	cfg := scr.Config{
-		Owner:        parts[0],
-		Repo:         parts[1],
+		Repos:        repos,
 		Tokens:       tokens,
-		OutputPath:   outputPath,
+		OutputDir:    outputDir,
 		Concurrency:  concurrency,
 		MaxRepos:     maxRepos,
 		MaxForkRepos: maxForkRepos,
@@ -616,7 +648,7 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 	}
 
 	m.progressCh = make(chan scr.Progress, 500)
-	m.outputPath = outputPath
+	m.outputPath = outputDir
 	m.state = stateRunning
 	m.startTime = time.Now()
 
@@ -742,9 +774,9 @@ func (m Model) formView() string {
 	b.WriteString(sectionDivider("Target", cw) + "\n\n")
 
 	if m.focused == 0 {
-		b.WriteString(activeLabel.Render("▶ Repository (owner/repo)") + "\n")
+		b.WriteString(activeLabel.Render("▶ Repositories (owner/repo, comma-separated for multiple)") + "\n")
 	} else {
-		b.WriteString(labelStyle.Render("  Repository (owner/repo)") + "\n")
+		b.WriteString(labelStyle.Render("  Repositories (owner/repo, comma-separated for multiple)") + "\n")
 	}
 	b.WriteString(m.repoInput.View() + "\n")
 	if m.repoWarn != "" {
