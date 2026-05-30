@@ -24,6 +24,7 @@ type Runner struct {
 	settings *SettingsStore
 	stats    *StatsStore
 	repos    *RepoStore
+	recent   *RecentStore
 	gh       *gh.Client
 
 	mu      sync.Mutex
@@ -50,7 +51,7 @@ type RunReport struct {
 }
 
 // NewRunner constructs a Runner.
-func NewRunner(cfg Config, q *repoqueue.Queue, p *pusher.Client, settings *SettingsStore, stats *StatsStore, repos *RepoStore) *Runner {
+func NewRunner(cfg Config, q *repoqueue.Queue, p *pusher.Client, settings *SettingsStore, stats *StatsStore, repos *RepoStore, recent *RecentStore) *Runner {
 	return &Runner{
 		cfg:      cfg,
 		queue:    q,
@@ -58,6 +59,7 @@ func NewRunner(cfg Config, q *repoqueue.Queue, p *pusher.Client, settings *Setti
 		settings: settings,
 		stats:    stats,
 		repos:    repos,
+		recent:   recent,
 		gh:       gh.NewClient(cfg.Tokens, 100*time.Millisecond),
 	}
 }
@@ -146,7 +148,7 @@ func (r *Runner) scrapeAndPush(runDir string, t scraper.RepoTarget, set Settings
 	progressCh := make(chan scraper.Progress, 256)
 	done := make(chan struct{})
 	var scrapeErr error
-	var count int
+	var count, failed int
 	go func() {
 		defer close(done)
 		for p := range progressCh {
@@ -155,6 +157,24 @@ func (r *Runner) scrapeAndPush(runDir string, t scraper.RepoTarget, set Settings
 			}
 			if p.Done {
 				count = p.Count
+			}
+			// Stream each processed stargazer into the live Contacts view.
+			if p.Result != nil && r.recent != nil {
+				ur := p.Result
+				status := "scraped"
+				switch {
+				case ur.FetchFailed:
+					status = "failed"
+					failed++
+				case ur.Email == "":
+					status = "none"
+				case ur.EmailSource == "noreply":
+					status = "noreply"
+				}
+				r.recent.Add(ContactRow{
+					Login: ur.Login, Email: ur.Email, EmailSource: ur.EmailSource,
+					Repo: name, Status: status, At: time.Now(),
+				})
 			}
 		}
 	}()
@@ -178,11 +198,41 @@ func (r *Runner) scrapeAndPush(runDir string, t scraper.RepoTarget, set Settings
 	}
 
 	r.repos.RecordRun(name, count, stats.Imported, rep.Error, time.Now())
+	r.autoTune(count, failed)
 
-	log.Printf("repo %s: offset=%d scraped=%d sent=%d imported=%d skipped=%d suppressed=%d noreply=%d invalid=%d%s",
-		name, offset, count, stats.Sent, stats.Imported, stats.Skipped, stats.Suppressed, stats.Noreply, stats.Invalid,
+	log.Printf("repo %s: offset=%d scraped=%d failed=%d sent=%d imported=%d skipped=%d suppressed=%d noreply=%d invalid=%d%s",
+		name, offset, count, failed, stats.Sent, stats.Imported, stats.Skipped, stats.Suppressed, stats.Noreply, stats.Invalid,
 		errSuffix(rep.Error))
 	return rep
+}
+
+// autoTune nudges the per-call delay based on the batch's fetch-failure rate:
+// back off when failures climb (limits too aggressive), speed up when they're
+// negligible. Self-learns a sustainable pace within [50ms, 2000ms].
+func (r *Runner) autoTune(scraped, failed int) {
+	set := r.settings.Get()
+	if !set.AutoTune || scraped < 20 {
+		return
+	}
+	rate := float64(failed) / float64(scraped)
+	cur := set.DelayMs
+	next := cur
+	switch {
+	case rate > 0.15:
+		next = cur*3/2 + 25
+		if next > 2000 {
+			next = 2000
+		}
+	case rate < 0.03 && cur > 50:
+		next = cur * 4 / 5
+		if next < 50 {
+			next = 50
+		}
+	}
+	if next != cur {
+		r.settings.Update(SettingsPatch{DelayMs: &next})
+		log.Printf("auto-tune: fail-rate=%.0f%% → delay %dms→%dms", rate*100, cur, next)
+	}
 }
 
 func errSuffix(e string) string {

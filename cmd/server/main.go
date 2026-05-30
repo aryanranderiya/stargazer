@@ -48,12 +48,6 @@ func main() {
 		ListID:      cfg.EmailListID,
 		Source:      cfg.Source,
 		PushNoreply: cfg.PushNoreply,
-		OnContact: func(r pusher.Record) {
-			recent.Add(server.ContactRow{
-				Login: r.Login, Email: r.Email, EmailSource: r.EmailSource,
-				Repo: r.Repo, Status: r.Status, At: time.Now(),
-			})
-		},
 	}
 	if err := push.Ping(); err != nil {
 		log.Printf("WARNING: email import API not reachable at %s yet (%v) — will retry on each run", cfg.EmailAPIURL, err)
@@ -64,7 +58,7 @@ func main() {
 	settings := server.NewSettingsStore(cfg.SettingsPath, cfg.InitialSettings())
 	stats := server.NewStatsStore(cfg.StatsPath, 50)
 	repoStore := server.NewRepoStore(cfg.RepoStatsPath)
-	runner := server.NewRunner(cfg, queue, push, settings, stats, repoStore)
+	runner := server.NewRunner(cfg, queue, push, settings, stats, repoStore, recent)
 	srv := server.New(cfg, queue, runner, settings, stats, repoStore, recent)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

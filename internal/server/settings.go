@@ -12,6 +12,7 @@ import (
 // survive restarts.
 type Settings struct {
 	Paused       bool `json:"paused"`
+	AutoTune     bool `json:"autoTune"` // self-adjust delay based on fetch-failure rate
 	ReposPerRun  int  `json:"reposPerRun"`
 	MaxStars     int  `json:"maxStars"` // 0 = all stargazers of the repo
 	DelayMs      int  `json:"delayMs"`
@@ -23,6 +24,7 @@ type Settings struct {
 // SettingsPatch is a partial update; nil fields are left unchanged.
 type SettingsPatch struct {
 	Paused       *bool `json:"paused"`
+	AutoTune     *bool `json:"autoTune"`
 	ReposPerRun  *int  `json:"reposPerRun"`
 	MaxStars     *int  `json:"maxStars"`
 	DelayMs      *int  `json:"delayMs"`
@@ -66,6 +68,9 @@ func (st *SettingsStore) Update(p SettingsPatch) Settings {
 	defer st.mu.Unlock()
 	if p.Paused != nil {
 		st.s.Paused = *p.Paused
+	}
+	if p.AutoTune != nil {
+		st.s.AutoTune = *p.AutoTune
 	}
 	if p.ReposPerRun != nil && *p.ReposPerRun > 0 {
 		st.s.ReposPerRun = *p.ReposPerRun

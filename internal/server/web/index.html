@@ -6,17 +6,20 @@
 <title>Stargazer</title>
 <style>
   :root{
-    --bg:#f5f5f7; --surface:#fff; --surface-2:#fbfbfd; --text:#1d1d1f; --muted:#6e6e73; --faint:#86868b;
-    --line:#e6e6ea; --accent:#0071e3; --accent-press:#0058b0;
-    --green:#2fb457; --green-bg:#e9f9ee; --blue:#0071e3; --blue-bg:#eaf3ff; --orange:#ff9f0a; --red:#ff3b30;
-    --shadow:0 1px 2px rgba(0,0,0,.04), 0 6px 24px rgba(0,0,0,.05);
+    --bg:#f0f0f3; --surface:#ffffff; --surface-2:#f2f2f5; --surface-3:#e9e9ee; --hover:#eceaf0;
+    --text:#1d1d1f; --muted:#6e6e73; --faint:#9a9aa0;
+    --accent:#0071e3; --accent-press:#0058b0;
+    --green:#2fb457; --green-bg:#e4f7ea; --blue:#0071e3; --blue-bg:#e7f1ff; --orange:#ff9f0a; --orange-bg:#fff1db; --red:#ff3b30; --red-bg:#ffe6e4; --gray-bg:#ececf0;
+    --shadow:0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.05);
+    --shadow-sm:0 1px 2px rgba(0,0,0,.05);
     --r:18px; --r-sm:12px;
   }
   @media (prefers-color-scheme: dark){
     :root{
-      --bg:#000; --surface:#1c1c1e; --surface-2:#161618; --text:#f5f5f7; --muted:#98989d; --faint:#6e6e73;
-      --line:#2c2c2e; --accent:#0a84ff; --accent-press:#0070e0; --green:#32d35c; --green-bg:#10301a;
-      --blue:#0a84ff; --blue-bg:#0f2236; --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 30px rgba(0,0,0,.5);
+      --bg:#0a0a0c; --surface:#161618; --surface-2:#202023; --surface-3:#2a2a2e; --hover:#2a2a2e;
+      --text:#f5f5f7; --muted:#9a9aa0; --faint:#6a6a70;
+      --accent:#0a84ff; --accent-press:#0070e0; --green:#32d35c; --green-bg:#11301c; --blue:#0a84ff; --blue-bg:#10243a; --orange:#ff9f0a; --orange-bg:#3a2a0c; --red:#ff453a; --red-bg:#3a1614; --gray-bg:#242428;
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.55); --shadow-sm:0 1px 2px rgba(0,0,0,.4);
     }
   }
   *{box-sizing:border-box} html,body{margin:0}
@@ -24,88 +27,100 @@
     font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Segoe UI",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
   .num{font-variant-numeric:tabular-nums} .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
   a{color:var(--accent);text-decoration:none}
-  header{position:sticky;top:0;z-index:20;backdrop-filter:saturate(1.6) blur(18px);
-    background:color-mix(in srgb,var(--bg) 78%,transparent);border-bottom:1px solid var(--line)}
-  .bar{max-width:1120px;margin:0 auto;padding:13px 22px;display:flex;align-items:center;gap:12px}
-  .brand{font-size:18px;font-weight:650;letter-spacing:-.02em;display:flex;align-items:center;gap:9px}
-  .brand .star{color:var(--accent)} .spacer{flex:1}
+  button,input,select,textarea{font:inherit}
+  /* flat: zero borders/outlines anywhere */
+  *{outline:none!important;border:none!important}
+
+  header{position:sticky;top:0;z-index:20;backdrop-filter:saturate(1.6) blur(20px);background:color-mix(in srgb,var(--bg) 80%,transparent)}
+  .bar{max-width:1140px;margin:0 auto;padding:14px 22px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .brand{font-size:18px;font-weight:650;letter-spacing:-.02em;display:flex;align-items:center;gap:9px} .brand .star{color:var(--accent)}
+  .spacer{flex:1}
   .hmeta{display:flex;gap:18px;color:var(--muted);font-size:12.5px} .hmeta b{color:var(--text);font-weight:600}
-  @media(max-width:680px){.hmeta{display:none}}
-  main{max-width:1120px;margin:0 auto;padding:26px 22px 90px} section{margin-top:26px}
-  .h{display:flex;align-items:baseline;gap:10px;margin:0 0 13px 2px}
-  .h h2{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:0}
-  .h .hint{font-size:12.5px;color:var(--faint)}
-  .chip{display:inline-flex;align-items:center;gap:7px;border-radius:980px;padding:5px 12px;font-size:12.5px;font-weight:550;background:var(--surface);border:1px solid var(--line)}
+  @media(max-width:760px){.hmeta{display:none}}
+  .chip{display:inline-flex;align-items:center;gap:7px;border-radius:980px;padding:6px 13px;font-size:12.5px;font-weight:560;background:var(--surface);box-shadow:var(--shadow-sm)}
   .dot{width:8px;height:8px;border-radius:50%;background:#9a9aa0;flex:none}
   .dot.on{background:var(--green);box-shadow:0 0 0 4px color-mix(in srgb,var(--green) 22%,transparent)}
   .dot.busy{background:var(--blue);box-shadow:0 0 0 4px color-mix(in srgb,var(--blue) 22%,transparent);animation:pulse 1.1s infinite}
   .dot.paused{background:var(--orange);box-shadow:0 0 0 4px color-mix(in srgb,var(--orange) 22%,transparent)}
   @keyframes pulse{50%{opacity:.35}}
-  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)} .pad{padding:22px}
-  .kpis{display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;gap:14px}
-  @media(max-width:860px){.kpis{grid-template-columns:1fr 1fr}}
-  .kpi{padding:20px 22px} .kpi .v{font-weight:680;letter-spacing:-.03em;line-height:1;font-size:30px} .kpi.hero .v{font-size:54px}
-  .kpi .k{color:var(--muted);font-size:13px;margin-top:8px} .kpi .sub{color:var(--faint);font-size:12px;margin-top:3px}
+  .tabs{display:flex;gap:2px;background:var(--surface-2);border-radius:980px;padding:3px}
+  .tab{font-size:13px;font-weight:560;background:transparent;color:var(--muted);padding:6px 15px;border-radius:980px;cursor:pointer}
+  .tab.active{background:var(--surface);color:var(--text);box-shadow:var(--shadow-sm)}
+  .refresh{display:flex;align-items:center;gap:6px}
+  .rbtn{font-size:15px;line-height:1;background:var(--surface);color:var(--text);width:34px;height:34px;border-radius:10px;cursor:pointer;box-shadow:var(--shadow-sm)}
+  .rbtn:active{transform:scale(.94)} .rbtn.spin{animation:spin .6s ease} @keyframes spin{to{transform:rotate(360deg)}}
+  .rsel{font-size:13px;background:var(--surface);color:var(--text);border-radius:10px;padding:7px 9px;cursor:pointer;box-shadow:var(--shadow-sm)}
+
+  main{max-width:1140px;margin:0 auto;padding:24px 22px 90px} section{margin-top:24px}
+  .h{display:flex;align-items:baseline;gap:10px;margin:0 0 13px 2px}
+  .h h2{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:0}
+  .h .hint{font-size:12.5px;color:var(--faint)}
+  .card{background:var(--surface);border-radius:var(--r);box-shadow:var(--shadow)} .pad{padding:22px}
+
+  /* tooltip */
+  .tip{position:relative;display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--surface-3);color:var(--muted);font-size:10px;font-weight:800;cursor:help;margin-left:6px;flex:none}
+  .tip .box{position:absolute;bottom:150%;left:50%;transform:translateX(-50%) translateY(4px);width:250px;background:var(--text);color:var(--bg);padding:11px 13px;border-radius:11px;font-size:12px;font-weight:450;line-height:1.55;letter-spacing:0;text-transform:none;opacity:0;pointer-events:none;transition:.16s;z-index:40;box-shadow:var(--shadow)}
+  .tip:hover .box{opacity:1;transform:translateX(-50%) translateY(0)}
+  @media(max-width:760px){.tip .box{left:auto;right:0;transform:translateY(4px)} .tip:hover .box{transform:translateY(0)}}
+
+  .kpis{display:grid;grid-template-columns:1.5fr 1fr 1fr 1fr 1fr;gap:14px}
+  @media(max-width:900px){.kpis{grid-template-columns:1fr 1fr}}
+  .kpi{padding:20px 22px} .kpi .v{font-weight:680;letter-spacing:-.03em;line-height:1;font-size:28px} .kpi.hero .v{font-size:50px}
+  .kpi .k{color:var(--muted);font-size:12.5px;margin-top:8px;display:flex;align-items:center} .kpi .sub{color:var(--faint);font-size:12px;margin-top:3px}
   .kpi.hero{background:linear-gradient(145deg,var(--surface),var(--surface-2))}
-  .info{padding:14px 18px;display:flex;gap:11px;align-items:flex-start;font-size:13px;color:var(--muted);line-height:1.55}
-  .info b{color:var(--text)}
+
+  .info-card{padding:15px 18px;display:flex;gap:11px;align-items:flex-start;font-size:13px;color:var(--muted);line-height:1.6} .info-card b{color:var(--text)}
+
   .add{display:flex;gap:12px;align-items:stretch} @media(max-width:680px){.add{flex-direction:column}}
-  textarea{flex:1;resize:vertical;min-height:46px;font:inherit;font-size:14px;line-height:1.5;background:var(--surface-2);color:var(--text);border:1px solid var(--line);border-radius:var(--r-sm);padding:11px 13px;outline:none}
-  textarea:focus{border-color:var(--accent)}
-  .btn{font:inherit;font-size:14px;font-weight:560;border:0;border-radius:var(--r-sm);padding:11px 18px;cursor:pointer;background:var(--accent);color:#fff;transition:.15s;letter-spacing:-.01em;white-space:nowrap}
+  textarea{flex:1;resize:vertical;min-height:48px;font-size:14px;line-height:1.5;background:var(--surface-2);color:var(--text);border-radius:var(--r-sm);padding:12px 14px}
+  textarea:focus{background:var(--surface-3)}
+  .btn{font-size:14px;font-weight:570;border-radius:var(--r-sm);padding:12px 20px;cursor:pointer;background:var(--accent);color:#fff;transition:.15s;white-space:nowrap}
   .btn:hover{background:var(--accent-press)} .btn:active{transform:scale(.985)} .btn[disabled]{opacity:.45;cursor:not-allowed}
-  .btn.sec{background:var(--surface-2);color:var(--text);border:1px solid var(--line)}
-  .btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--line);padding:6px 11px;font-size:12.5px;border-radius:9px}
+  .btn.ghost{background:var(--surface-2);color:var(--muted);padding:7px 13px;font-size:12.5px;border-radius:9px} .btn.ghost:hover{background:var(--surface-3);color:var(--text)}
+
   .repos{display:flex;flex-direction:column;gap:10px}
-  .repo{display:flex;flex-direction:column;gap:10px;padding:16px 18px}
-  .repo .top{display:flex;align-items:center;gap:10px}
-  .repo .name{font-weight:600;font-size:15px;letter-spacing:-.01em} .repo .grow{flex:1}
-  .badge{font-size:11px;font-weight:650;padding:2px 9px;border-radius:980px}
+  .repo{display:flex;flex-direction:column;gap:11px;padding:17px 19px}
+  .repo .top{display:flex;align-items:center;gap:10px} .repo .name{font-weight:600;font-size:15px} .repo .grow{flex:1}
+  .badge{font-size:11px;font-weight:680;padding:3px 10px;border-radius:980px}
   .badge.active{background:var(--blue-bg);color:var(--blue)} .badge.done{background:var(--green-bg);color:var(--green)}
-  .badge.err{background:color-mix(in srgb,var(--red) 14%,transparent);color:var(--red)}
-  .badge.wait{background:var(--surface-2);color:var(--muted);border:1px solid var(--line)}
-  .track{height:8px;border-radius:6px;background:var(--line);overflow:hidden}
+  .badge.err{background:var(--red-bg);color:var(--red)} .badge.wait{background:var(--gray-bg);color:var(--muted)}
+  .track{height:9px;border-radius:6px;background:var(--surface-3);overflow:hidden}
   .track>i{display:block;height:100%;border-radius:6px;background:var(--blue);transition:width .6s cubic-bezier(.4,0,.2,1)}
   .track>i.done{background:var(--green)} .track>i.busy{background:linear-gradient(90deg,var(--blue),#5aa9ff,var(--blue));background-size:200% 100%;animation:flow 1.4s linear infinite}
   @keyframes flow{to{background-position:-200% 0}}
-  .track.idet{background:repeating-linear-gradient(90deg,var(--line) 0 12px,transparent 12px 24px);animation:shift 1s linear infinite}
-  @keyframes shift{to{background-position:24px 0}}
-  .meta{display:flex;gap:18px;color:var(--muted);font-size:12.5px;flex-wrap:wrap} .meta b{color:var(--text);font-weight:600}
+  .track.idet{background:repeating-linear-gradient(90deg,var(--surface-3) 0 12px,transparent 12px 24px);animation:shift 1s linear infinite} @keyframes shift{to{background-position:24px 0}}
+  .meta{display:flex;gap:16px;color:var(--muted);font-size:12.5px;flex-wrap:wrap} .meta b{color:var(--text);font-weight:600}
+  .eta{color:var(--blue)}
   .empty{color:var(--faint);text-align:center;padding:26px;font-size:14px}
+
   .ctrls{display:grid;grid-template-columns:repeat(3,1fr);gap:18px} @media(max-width:680px){.ctrls{grid-template-columns:1fr 1fr}}
-  .field label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
-  .field .lbl-sub{color:var(--faint);font-weight:400}
-  .field input{width:100%;font:inherit;font-size:14px;background:var(--surface-2);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:9px 11px;outline:none;text-align:right}
-  .field input:focus{border-color:var(--accent)}
-  .switchrow{display:flex;align-items:center;justify-content:space-between;gap:12px}
-  .switch{position:relative;width:48px;height:29px;flex:none} .switch input{opacity:0;width:0;height:0}
-  .slider{position:absolute;inset:0;background:var(--line);border-radius:980px;transition:.2s;cursor:pointer}
+  .field label{display:flex;align-items:center;font-size:12.5px;color:var(--muted);margin-bottom:7px} .field .lbl-sub{color:var(--faint)}
+  .field input{width:100%;font-size:14px;background:var(--surface-2);color:var(--text);border-radius:10px;padding:10px 12px;text-align:right} .field input:focus{background:var(--surface-3)}
+  .switchrow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0}
+  .switchrow + .switchrow{margin-top:2px}
+  .switch{position:relative;width:48px;height:29px;flex:none} .switch input{opacity:0;width:0;height:0;position:absolute}
+  .slider{position:absolute;inset:0;background:var(--surface-3);border-radius:980px;transition:.2s;cursor:pointer}
   .slider::before{content:"";position:absolute;height:25px;width:25px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.35)}
   .switch input:checked + .slider{background:var(--green)} .switch input:checked + .slider::before{transform:translateX(19px)}
-  table{width:100%;border-collapse:collapse;font-size:13px}
-  th{text-align:right;color:var(--muted);font-weight:500;padding:9px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
-  th:first-child,td:first-child{text-align:left} td{padding:10px;border-bottom:1px solid var(--line);white-space:nowrap} tr:last-child td{border-bottom:0}
-  .tag{font-size:11px;font-weight:600;padding:2px 8px;border-radius:980px;background:var(--surface-2);border:1px solid var(--line);color:var(--muted)} .err{color:var(--red)}
-  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--text);color:var(--bg);padding:12px 20px;border-radius:13px;font-size:14px;font-weight:550;opacity:0;transition:.25s;pointer-events:none;box-shadow:var(--shadow);z-index:50}
-  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)} .foot{color:var(--faint);font-size:12px;text-align:center;margin-top:30px}
-  .tabs{display:flex;gap:2px;background:var(--surface-2);border:1px solid var(--line);border-radius:980px;padding:3px;margin-left:4px}
-  .tab{font:inherit;font-size:13px;font-weight:550;border:0;background:transparent;color:var(--muted);padding:5px 14px;border-radius:980px;cursor:pointer}
-  .tab.active{background:var(--surface);color:var(--text);box-shadow:var(--shadow)}
-  .refresh{display:flex;align-items:center;gap:6px}
-  .rbtn{font:inherit;font-size:15px;line-height:1;border:1px solid var(--line);background:var(--surface);color:var(--text);width:32px;height:32px;border-radius:9px;cursor:pointer}
-  .rbtn:active{transform:scale(.94)} .rbtn.spin{animation:spin .6s ease}
-  @keyframes spin{to{transform:rotate(360deg)}}
-  .rsel{font:inherit;font-size:13px;background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:9px;padding:6px 8px}
+  .lbl-strong{font-weight:600;font-size:15px;display:flex;align-items:center}
+
   .filters{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
-  .filters label{font-size:12px;color:var(--muted);display:flex;gap:6px;align-items:center}
-  .filters select{font:inherit;font-size:13px;background:var(--surface-2);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:7px 10px}
+  .filters label{font-size:12.5px;color:var(--muted);display:flex;gap:7px;align-items:center}
+  .filters select{font-size:13px;background:var(--surface-2);color:var(--text);border-radius:10px;padding:8px 11px;cursor:pointer}
   .cchips{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto}
-  .cchip{font-size:12px;font-weight:600;padding:4px 11px;border-radius:980px;background:var(--surface-2);border:1px solid var(--line)} .cchip .n{font-variant-numeric:tabular-nums}
-  .src{font-size:11px;font-weight:600;padding:2px 8px;border-radius:980px;background:var(--surface-2);border:1px solid var(--line);color:var(--muted)}
-  .src.profile{color:var(--green)} .src.commit,.src.events,.src.search{color:var(--blue)} .src.noreply{color:var(--orange)}
-  .stat{font-size:11px;font-weight:600;padding:2px 9px;border-radius:980px}
-  .stat.sent{background:var(--green-bg);color:var(--green)} .stat.noreply{background:color-mix(in srgb,var(--orange) 16%,transparent);color:var(--orange)}
-  .stat.invalid{background:color-mix(in srgb,var(--red) 14%,transparent);color:var(--red)} .stat.duplicate{background:var(--surface-2);color:var(--muted);border:1px solid var(--line)}
+  .cchip{font-size:12px;font-weight:600;padding:5px 12px;border-radius:980px;background:var(--surface-2)} .cchip .n{font-variant-numeric:tabular-nums;color:var(--text)} .cchip{color:var(--muted)}
+  .src{font-size:11px;font-weight:650;padding:3px 9px;border-radius:980px;background:var(--surface-2);color:var(--muted)}
+  .src.profile{background:var(--green-bg);color:var(--green)} .src.commit,.src.events,.src.search{background:var(--blue-bg);color:var(--blue)} .src.noreply{background:var(--orange-bg);color:var(--orange)}
+  .stat{font-size:11px;font-weight:680;padding:3px 10px;border-radius:980px}
+  .stat.scraped{background:var(--green-bg);color:var(--green)} .stat.noreply{background:var(--orange-bg);color:var(--orange)}
+  .stat.none{background:var(--gray-bg);color:var(--muted)} .stat.failed{background:var(--red-bg);color:var(--red)}
+
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:right;color:var(--faint);font-weight:500;padding:9px 10px;white-space:nowrap} th:first-child,td:first-child{text-align:left}
+  td{padding:10px;white-space:nowrap} tbody tr:hover{background:var(--surface-2)}
+  .tag{font-size:11px;font-weight:600;padding:2px 9px;border-radius:980px;background:var(--surface-2);color:var(--muted)} .err{color:var(--red)}
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--text);color:var(--bg);padding:12px 20px;border-radius:13px;font-size:14px;font-weight:560;opacity:0;transition:.25s;pointer-events:none;box-shadow:var(--shadow);z-index:50}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)} .foot{color:var(--faint);font-size:12px;text-align:center;margin-top:30px}
 </style>
 </head>
 <body>
@@ -115,7 +130,7 @@
     <span class="chip" id="hstatus"><span class="dot" id="hdot"></span><span id="hstate">—</span></span>
     <nav class="tabs"><button class="tab active" data-tab="overview">Overview</button><button class="tab" data-tab="contacts">Contacts</button></nav>
     <span class="spacer"></span>
-    <div class="hmeta"><span>Queue <b id="m-queue">—</b></span><span>Pace <b id="m-pace">—</b></span><span>Tokens <b id="m-tokens">—</b></span></div>
+    <div class="hmeta"><span>Speed <b id="m-rate">—</b></span><span>Queue <b id="m-queue">—</b></span><span>Tokens <b id="m-tokens">—</b></span></div>
     <div class="refresh">
       <button class="rbtn" id="refreshBtn" title="Refresh now">↻</button>
       <select class="rsel" id="refreshRate" title="Auto-refresh interval">
@@ -131,26 +146,25 @@
     <div class="kpis">
       <div class="card kpi hero"><div class="v num" id="k-imported">—</div><div class="k">Emails ingested → Scraped audience</div><div class="sub" id="k-source">source = stargazer:owner/repo</div></div>
       <div class="card kpi"><div class="v num" id="k-scraped">—</div><div class="k">Stargazers scraped</div></div>
+      <div class="card kpi"><div class="v num" id="k-success">—</div><div class="k">Scrape success<span class="tip">?<span class="box"><b>Fetch success rate</b> — share of stargazers whose profile/email lookup succeeded. If this drops, GitHub is throttling us (limits too aggressive). Auto-tune slows down to fix it.</span></span></div></div>
       <div class="card kpi"><div class="v num" id="k-repos">—</div><div class="k">Repos in queue</div></div>
       <div class="card kpi"><div class="v num" id="k-runs">—</div><div class="k">Batches run</div></div>
     </div>
   </section>
 
   <section style="margin-top:14px">
-    <div class="card info">
+    <div class="card info-card">
       <span style="font-size:15px;line-height:1.3">💡</span>
-      <span><b>How it works:</b> add repos below and they start scraping <b>automatically</b> — one repo at a time, walking a little deeper on each pass and moving to the next when one's done (it never re-sends emails it already has). <b>No schedule</b> — it just keeps going until the whole queue is walked, then waits for new repos. Emails land straight in your <b>Scraped audience</b>. It's paced gently and respects GitHub's rate limits (it slows down rather than failing); tune <b>Delay between calls</b> to go faster/slower, or switch <b>Automatic scraping</b> off to pause.</span>
+      <span><b>How it works:</b> add repos and they scrape <b>automatically</b>, one repo fully before the next (sequential), walking deeper each pass — no schedule. Emails flow into your <b>Scraped audience</b>; no-reply &amp; invalid addresses are dropped, duplicates skipped. It paces itself to GitHub's limits and <b>auto-tunes</b> speed from the failure rate, so it slows down instead of failing. Watch it live in <b>Contacts</b>.</span>
     </div>
   </section>
 
   <section>
     <div class="h"><h2>Add repositories</h2><span class="hint">paste <span class="mono">owner/repo</span> or GitHub URLs — one per line or comma-separated. They start scraping right away.</span></div>
-    <div class="card pad">
-      <div class="add">
-        <textarea id="addbox" rows="2" placeholder="facebook/react&#10;https://github.com/vercel/next.js&#10;langchain-ai/langchain, denoland/deno"></textarea>
-        <button class="btn" id="addbtn">Add to queue</button>
-      </div>
-    </div>
+    <div class="card pad"><div class="add">
+      <textarea id="addbox" rows="2" placeholder="facebook/react&#10;https://github.com/vercel/next.js&#10;langchain-ai/langchain, denoland/deno"></textarea>
+      <button class="btn" id="addbtn">Add to queue</button>
+    </div></div>
   </section>
 
   <section>
@@ -161,14 +175,18 @@
   <section>
     <div class="h"><h2>Pace &amp; control</h2><span class="hint">applies continuously to the live worker</span></div>
     <div class="card pad">
-      <div class="switchrow" style="margin-bottom:20px">
-        <div><div style="font-weight:600;font-size:15px">Automatic scraping</div><div style="color:var(--muted);font-size:12.5px" id="pausehint">—</div></div>
+      <div class="switchrow">
+        <div><div class="lbl-strong">Automatic scraping<span class="tip">?<span class="box">The master switch. <b>On</b> = the worker continuously scrapes the queue (one repo fully, then the next). <b>Off</b> = everything pauses; nothing is scraped until you turn it back on. Your progress is saved either way.</span></span></div><div style="color:var(--muted);font-size:12.5px" id="pausehint">—</div></div>
         <label class="switch"><input type="checkbox" id="enabled"><span class="slider"></span></label>
       </div>
-      <div class="ctrls">
-        <div class="field"><label>Delay between calls <span class="lbl-sub">(ms · lower = faster)</span></label><input type="number" id="delayMs" min="0" step="50"></div>
-        <div class="field"><label>Max stars per pass <span class="lbl-sub">(batch size)</span></label><input type="number" id="maxStars" min="0" step="100"></div>
-        <div class="field"><label>Concurrency <span class="lbl-sub">(parallel lookups)</span></label><input type="number" id="concurrency" min="1" max="20" step="1"></div>
+      <div class="switchrow">
+        <div><div class="lbl-strong">Auto-tune speed<span class="tip">?<span class="box">Self-learning pacing. After each batch it looks at the failure rate and <b>automatically adjusts the delay</b> — slowing down when GitHub starts throttling, speeding up when everything's clean. Leave on and it finds the fastest safe speed on its own.</span></span></div><div style="color:var(--muted);font-size:12.5px" id="tunehint">—</div></div>
+        <label class="switch"><input type="checkbox" id="autoTune"><span class="slider"></span></label>
+      </div>
+      <div class="ctrls" style="margin-top:14px">
+        <div class="field"><label>Delay between calls <span class="lbl-sub">&nbsp;(ms)</span><span class="tip">?<span class="box">Pause between GitHub API calls. <b>Lower = faster</b> but more likely to hit rate limits; higher = gentler. With Auto-tune on, this number moves on its own. Range 50–2000ms.</span></span></label><input type="number" id="delayMs" min="0" step="50"></div>
+        <div class="field"><label>Max stars / pass<span class="tip">?<span class="box">How many stargazers to scrape per pass before moving on. <b>Bigger</b> = fewer, longer bursts; <b>smaller</b> = more frequent updates and quicker switching between repos. It always resumes where it left off (deep-walk), so this only affects batch size, not totals.</span></span></label><input type="number" id="maxStars" min="0" step="100"></div>
+        <div class="field"><label>Concurrency<span class="tip">?<span class="box">How many GitHub lookups run in parallel. <b>Higher = faster</b> but uses rate limit quicker and raises failure rate. 3–8 is a sane range across your tokens.</span></span></label><input type="number" id="concurrency" min="1" max="20" step="1"></div>
       </div>
       <div style="margin-top:16px"><button class="btn" id="saveBtn">Save</button></div>
     </div>
@@ -183,22 +201,21 @@
       </table>
     </div>
   </section>
-
   </div><!-- /view-overview -->
 
   <div id="view-contacts" hidden>
     <section style="margin-top:8px">
-      <div class="h"><h2>Live contacts</h2><span class="hint">most recent scrape results — usernames, emails &amp; outcomes, like the CLI stream (newest first)</span></div>
+      <div class="h"><h2>Live contacts</h2><span class="hint">streaming scrape results — usernames, emails &amp; outcomes, newest first</span></div>
       <div class="card pad">
         <div class="filters">
           <label>Repo <select id="c-repo"><option value="">all repos</option></select></label>
-          <label>Status <select id="c-status"><option value="">all</option><option value="sent">ingested</option><option value="noreply">no-reply</option><option value="invalid">invalid</option><option value="duplicate">duplicate</option></select></label>
+          <label>Status <select id="c-status"><option value="">all</option><option value="scraped">real email</option><option value="noreply">no-reply</option><option value="none">no email</option><option value="failed">failed</option></select></label>
           <div class="cchips" id="c-chips"></div>
         </div>
         <div style="overflow-x:auto">
           <table>
             <thead><tr><th>User</th><th>Email</th><th>Source</th><th>Repo</th><th>Outcome</th><th>When</th></tr></thead>
-            <tbody id="c-rows"><tr><td colspan="6" class="empty">No contacts scraped yet — they'll stream in here as scraping runs.</td></tr></tbody>
+            <tbody id="c-rows"><tr><td colspan="6" class="empty">No contacts scraped yet — turn on scraping and they'll stream in here.</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -213,137 +230,104 @@
 const $=id=>document.getElementById(id);
 const fmt=n=>(n??0).toLocaleString();
 const esc=s=>(s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-let editing=false;
+let editing=false, lastHistory=[], rate=0;
 ["delayMs","maxStars","concurrency"].forEach(id=>{$(id).addEventListener("focus",()=>editing=true);$(id).addEventListener("blur",()=>setTimeout(()=>editing=false,500));});
 function toast(m){const t=$("toast");t.textContent=m;t.classList.add("show");clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove("show"),2400);}
 function rel(ts){if(!ts||(""+ts).startsWith("0001"))return"not yet";const d=new Date(ts),s=(Date.now()-d)/1000;if(s<60)return Math.max(0,Math.floor(s))+"s ago";if(s<3600)return Math.floor(s/60)+"m ago";if(s<86400)return Math.floor(s/3600)+"h ago";return Math.floor(s/86400)+"d ago";}
 function dur(a,b){const s=Math.max(0,(new Date(b)-new Date(a))/1000);return s<60?Math.round(s)+"s":Math.floor(s/60)+"m "+Math.round(s%60)+"s";}
+function human(sec){if(!isFinite(sec)||sec<=0)return"—";const d=Math.floor(sec/86400),h=Math.floor(sec%86400/3600),m=Math.floor(sec%3600/60);if(d>0)return`${d}d ${h}h`;if(h>0)return`${h}h ${m}m`;if(m>0)return`${m}m`;return`${Math.round(sec)}s`;}
+function etaDate(sec){if(!isFinite(sec)||sec<=0)return"";const d=new Date(Date.now()+sec*1000);return d.toLocaleDateString(undefined,{month:"short",day:"numeric"})+(sec>86400*0?", "+d.toLocaleTimeString(undefined,{hour:"numeric"})+"":"");}
 async function api(p,o){return fetch(p,Object.assign({cache:"no-store"},o||{}));}
 
+function computeRate(h){let s=0,sec=0;for(const r of (h||[]).slice(0,20)){const reps=r.repos||[];s+=reps.reduce((a,x)=>a+(x.scraped||0),0);sec+=Math.max(0,(new Date(r.finishedAt)-new Date(r.startedAt))/1000);}return sec>2?s/sec:0;}
+
 async function refresh(){
-  let d; try{ d=await(await api("/api/status")).json(); }catch(e){ $("foot").textContent="⚠ cannot reach server"; return; }
-  const t=d.totals||{}, q=d.queue||{}, s=d.settings||{}, repos=d.repos||[];
-  const allDone = repos.length>0 && repos.every(r=>r.totalStars>0 && r.processed>=r.totalStars);
+  let d,h,cc;
+  try{[d,h,cc]=await Promise.all([api("/api/status").then(r=>r.json()),api("/api/history").then(r=>r.json()),api("/api/contacts?limit=1").then(r=>r.json())]);}
+  catch(e){$("foot").textContent="⚠ cannot reach server";return;}
+  lastHistory=h||[]; rate=computeRate(lastHistory);
+  const t=d.totals||{},q=d.queue||{},s=d.settings||{},repos=d.repos||[];
+  const allDone=repos.length>0&&repos.every(r=>r.totalStars>0&&r.processed>=r.totalStars);
 
-  // status
   let dotc,label;
-  if(s.paused){dotc="paused";label="Paused";}
-  else if(d.running){dotc="busy";label="Scraping…";}
-  else if(allDone){dotc="on";label="All caught up";}
-  else {dotc="busy";label="Auto-scraping";}
-  $("hdot").className="dot "+dotc; $("hstate").textContent=label;
-  $("m-queue").textContent=(q.total||0)+" repos";
-  $("m-pace").textContent=(s.delayMs!=null?s.delayMs+"ms":"—");
-  $("m-tokens").textContent=d.tokens;
+  if(s.paused){dotc="paused";label="Paused";}else if(d.running){dotc="busy";label="Scraping…";}else if(allDone){dotc="on";label="All caught up";}else{dotc="busy";label="Auto-scraping";}
+  $("hdot").className="dot "+dotc;$("hstate").textContent=label;
+  $("m-rate").textContent=rate>0?Math.round(rate*60).toLocaleString()+"/min":"—";
+  $("m-queue").textContent=(q.total||0)+" repos";$("m-tokens").textContent=d.tokens;
 
-  $("k-imported").textContent=fmt(t.imported);
-  $("k-scraped").textContent=fmt(t.scraped);
-  $("k-repos").textContent=fmt(q.total);
-  $("k-runs").textContent=fmt(t.runs);
-  $("k-source").textContent=`source = stargazer:owner/repo`;
+  $("k-imported").textContent=fmt(t.imported);$("k-scraped").textContent=fmt(t.scraped);
+  $("k-repos").textContent=fmt(q.total);$("k-runs").textContent=fmt(t.runs);
+  const ct=(cc&&cc.counts)||{}; const tot=ct.total||0, fail=ct.failed||0;
+  $("k-success").textContent=tot>0?Math.round((tot-fail)/tot*100)+"%":"—";
+  $("k-source").textContent="source = stargazer:owner/repo";
 
-  if(!editing){$("enabled").checked=!s.paused;$("delayMs").value=s.delayMs;$("maxStars").value=s.maxStars;$("concurrency").value=s.concurrency;}
-  $("pausehint").textContent = s.paused ? "Off — paused. Flip on to resume scraping the queue." : (allDone?"On — queue fully walked; waiting for new repos.":"On — continuously scraping the queue.");
+  if(!editing){$("enabled").checked=!s.paused;$("autoTune").checked=!!s.autoTune;$("delayMs").value=s.delayMs;$("maxStars").value=s.maxStars;$("concurrency").value=s.concurrency;}
+  $("pausehint").textContent=s.paused?"Off — paused. Flip on to resume.":(allDone?"On — queue fully walked; waiting for new repos.":"On — continuously scraping.");
+  $("tunehint").textContent=s.autoTune?`On — currently ${s.delayMs}ms between calls`:"Off — delay stays where you set it";
 
-  // repos
   let activeKey=null;
   for(const r of repos){const dn=r.totalStars>0&&(r.processed||0)>=r.totalStars;if(!dn){activeKey=r.repo;break;}}
-  $("repos-hint").textContent=repos.length?`${repos.length} in queue · sequential, one repo fully then the next · progress = walked ÷ total`:"";
-  if(!repos.length){$("repos").innerHTML=`<div class="card empty">No repositories yet — paste some above and they'll start scraping.</div>`;}
-  else{
-    $("repos").innerHTML=repos.map(r=>{
-      const total=r.totalStars,proc=r.processed||0,known=total>0;
-      const pct=known?Math.min(100,Math.round(proc/total*100)):0;
-      const done=known&&proc>=total;
-      const isActive=r.repo===activeKey&&d.running&&!s.paused;
-      let badge;
-      if(r.lastError)badge=`<span class="badge err" title="${esc(r.lastError)}">error</span>`;
-      else if(done)badge=`<span class="badge done">done</span>`;
-      else if(isActive)badge=`<span class="badge active">scraping now</span>`;
-      else if(r.repo===activeKey)badge=`<span class="badge wait">${s.paused?'queued':'next up'}</span>`;
-      else badge=`<span class="badge wait">queued</span>`;
-      const bar=known?`<div class="track"><i class="${done?'done':(isActive?'busy':'')}" style="width:${Math.max(pct, isActive?2:0)}%"></i></div>`:`<div class="track idet"></div>`;
-      const totalTxt=known?`${fmt(proc)} / ${fmt(total)} stars walked`:`fetching star count…`;
-      return `<div class="card repo">
-        <div class="top">
-          <a class="name mono" href="https://github.com/${esc(r.repo)}" target="_blank">${esc(r.repo)}</a>
-          ${badge}<span class="grow"></span>
-          <span class="num" style="color:var(--muted);font-size:12.5px">${known?pct+"%":""}</span>
-          <button class="btn ghost" data-remove="${esc(r.repo)}" title="Remove from queue">Remove</button>
-        </div>
-        ${bar}
-        <div class="meta"><span>${totalTxt}</span><span><b>${fmt(r.imported)}</b> emails ingested</span><span>last pass <b>${rel(r.lastRunAt)}</b></span></div>
-      </div>`;
-    }).join("");
-  }
-  $("foot").textContent=`pushing to ${d.emailApi} · ${new Date().toLocaleTimeString()}`;
-  renderHistory();
-}
-async function renderHistory(){
-  let h; try{h=await(await api("/api/history")).json();}catch(e){return;}
-  if(!h||!h.length)return;
-  $("history").innerHTML=h.map(r=>{
-    const reps=r.repos||[],sum=k=>reps.reduce((a,x)=>a+((x.push&&x.push[k])||0),0);
-    const scr=reps.reduce((a,x)=>a+(x.scraped||0),0),names=reps.map(x=>x.repo).join(", ")||"—";
-    const errs=reps.filter(x=>x.error).map(x=>x.error).concat(r.error?[r.error]:[]);
-    return `<tr><td title="${r.startedAt}">${rel(r.startedAt)}</td><td class="mono" title="${esc(names)}">${esc(names.length>30?names.slice(0,30)+"…":names)}</td>
-      <td class="num">${fmt(scr)}</td><td class="num">${fmt(sum("imported"))}</td><td class="num">${fmt(sum("skipped"))}</td><td class="num">${fmt(sum("suppressed"))}</td><td class="num">${fmt(sum("noreply"))}</td>
-      <td class="num">${dur(r.startedAt,r.finishedAt)}${errs.length?` <span class="err" title="${esc(errs.join(' | '))}">⚠</span>`:""}</td></tr>`;
-  }).join("");
-}
-$("addbtn").onclick=async()=>{
-  const text=$("addbox").value.trim();if(!text){toast("Paste some owner/repo lines");return;}
-  $("addbtn").disabled=true;
-  const r=await api("/api/queue",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text})});
-  const j=await r.json().catch(()=>({}));$("addbtn").disabled=false;
-  if(r.ok){$("addbox").value="";toast(`Added ${j.added} repo${j.added===1?"":"s"} — scraping will pick them up${j.warnings&&j.warnings.length?` · ${j.warnings.length} skipped`:""}`);refresh();}
-  else toast(j.error||"Could not add");
-};
-$("saveBtn").onclick=async()=>{
-  await api("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({delayMs:+$("delayMs").value,maxStars:+$("maxStars").value,concurrency:+$("concurrency").value})});
-  editing=false;toast("Saved — applies to the next pass");refresh();
-};
-$("enabled").onchange=async()=>{
-  const on=$("enabled").checked;
-  await api("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({paused:!on})});
-  toast(on?"Automatic scraping on":"Paused");refresh();
-};
-document.addEventListener("click",async e=>{
-  const rm=e.target.closest("[data-remove]");
-  if(rm){const repo=rm.dataset.remove;if(!confirm(`Remove ${repo} from the queue?`))return;
-    await api("/api/queue",{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({repo})});toast(`Removed ${repo}`);refresh();}
-});
-// tabs
-let curTab="overview";
-document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{
-  curTab=b.dataset.tab;
-  document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active",x===b));
-  $("view-overview").hidden=curTab!=="overview";
-  $("view-contacts").hidden=curTab!=="contacts";
-  if(curTab==="contacts")refreshContacts();
-});
-$("c-repo").onchange=refreshContacts;$("c-status").onchange=refreshContacts;
+  $("repos-hint").textContent=repos.length?`${repos.length} in queue · sequential, one fully then the next`:"";
+  if(!repos.length){$("repos").innerHTML=`<div class="card empty">No repositories yet — paste some above.</div>`;}
+  else{$("repos").innerHTML=repos.map(r=>{
+    const total=r.totalStars,proc=r.processed||0,known=total>0,pct=known?Math.min(100,Math.round(proc/total*100)):0,done=known&&proc>=total;
+    const isActive=r.repo===activeKey&&d.running&&!s.paused;
+    let badge=r.lastError?`<span class="badge err" title="${esc(r.lastError)}">error</span>`:done?`<span class="badge done">done</span>`:isActive?`<span class="badge active">scraping now</span>`:r.repo===activeKey?`<span class="badge wait">${s.paused?'queued':'next up'}</span>`:`<span class="badge wait">queued</span>`;
+    const bar=known?`<div class="track"><i class="${done?'done':(isActive?'busy':'')}" style="width:${Math.max(pct,isActive?2:0)}%"></i></div>`:`<div class="track idet"></div>`;
+    const remain=known?Math.max(0,total-proc):0;
+    let etaTxt="";
+    if(known&&!done&&rate>0){const sec=remain/rate;etaTxt=` · <span class="eta">~${human(sec)} left · done ${etaDate(sec)}</span>`;}
+    else if(done)etaTxt=" · ✓ complete";
+    const totalTxt=known?`${fmt(proc)} / ${fmt(total)} stars`:`fetching star count…`;
+    return `<div class="card repo">
+      <div class="top"><a class="name mono" href="https://github.com/${esc(r.repo)}" target="_blank">${esc(r.repo)}</a>${badge}<span class="grow"></span>
+        <span class="num" style="color:var(--muted);font-size:12.5px">${known?pct+"%":""}</span>
+        <button class="btn ghost" data-remove="${esc(r.repo)}" title="Remove from queue">Remove</button></div>
+      ${bar}
+      <div class="meta"><span>${totalTxt}</span><span><b>${fmt(r.imported)}</b> ingested</span><span>last pass <b>${rel(r.lastRunAt)}</b></span>${etaTxt?`<span>${etaTxt}</span>`:""}</div>
+    </div>`;}).join("");}
 
+  renderHistory();
+  if(curTab==="contacts")refreshContacts();
+  $("foot").textContent=`pushing to ${d.emailApi} · ${new Date().toLocaleTimeString()}`;
+}
+function renderHistory(){
+  const h=lastHistory;if(!h||!h.length)return;
+  $("history").innerHTML=h.map(r=>{const reps=r.repos||[],sum=k=>reps.reduce((a,x)=>a+((x.push&&x.push[k])||0),0);
+    const scr=reps.reduce((a,x)=>a+(x.scraped||0),0),names=reps.map(x=>x.repo).join(", ")||"—";const errs=reps.filter(x=>x.error).map(x=>x.error).concat(r.error?[r.error]:[]);
+    return `<tr><td title="${r.startedAt}">${rel(r.startedAt)}</td><td class="mono" title="${esc(names)}">${esc(names.length>28?names.slice(0,28)+"…":names)}</td>
+      <td class="num">${fmt(scr)}</td><td class="num">${fmt(sum("imported"))}</td><td class="num">${fmt(sum("skipped"))}</td><td class="num">${fmt(sum("suppressed"))}</td><td class="num">${fmt(sum("noreply"))}</td>
+      <td class="num">${dur(r.startedAt,r.finishedAt)}${errs.length?` <span class="err" title="${esc(errs.join(' | '))}">⚠</span>`:""}</td></tr>`;}).join("");
+}
+
+let curTab="overview";
+document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{curTab=b.dataset.tab;document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active",x===b));$("view-overview").hidden=curTab!=="overview";$("view-contacts").hidden=curTab!=="contacts";if(curTab==="contacts")refreshContacts();});
+$("c-repo").onchange=refreshContacts;$("c-status").onchange=refreshContacts;
 const SRC=s=>`<span class="src ${esc((s||'').toLowerCase())}">${esc(s||"—")}</span>`;
-const STAT=s=>`<span class="stat ${esc(s)}">${esc(s==='sent'?'ingested':s)}</span>`;
+const STLBL={scraped:"real email",noreply:"no-reply",none:"no email",failed:"failed"};
+const STAT=s=>`<span class="stat ${esc(s)}">${esc(STLBL[s]||s)}</span>`;
 async function refreshContacts(){
   let d;try{d=await(await api(`/api/contacts?repo=${encodeURIComponent($("c-repo").value)}&status=${encodeURIComponent($("c-status").value)}&limit=300`)).json();}catch(e){return;}
   const sel=$("c-repo").value;
-  if(d.repos){$("c-repo").innerHTML=`<option value="">all repos</option>`+d.repos.map(r=>`<option value="${esc(r)}" ${r===sel?'selected':''}>${esc(r)}</option>`).join("");}
+  if(d.repos)$("c-repo").innerHTML=`<option value="">all repos</option>`+d.repos.map(r=>`<option value="${esc(r)}" ${r===sel?'selected':''}>${esc(r)}</option>`).join("");
   const c=d.counts||{};
-  $("c-chips").innerHTML=[["total","total"],["sent","ingested"],["noreply","no-reply"],["invalid","invalid"],["duplicate","duplicate"]]
-    .map(([k,lbl])=>`<span class="cchip"><span class="n">${fmt(c[k])}</span> ${lbl}</span>`).join("");
+  $("c-chips").innerHTML=[["total","total"],["scraped","real email"],["noreply","no-reply"],["none","no email"],["failed","failed"]].map(([k,l])=>`<span class="cchip"><span class="n">${fmt(c[k])}</span> ${l}</span>`).join("");
   const rows=d.contacts||[];
-  $("c-rows").innerHTML=rows.length?rows.map(r=>`<tr>
-    <td><a class="mono" href="https://github.com/${esc(r.login)}" target="_blank">${esc(r.login||"—")}</a></td>
-    <td class="mono">${esc(r.email||"—")}</td><td>${SRC(r.emailSource)}</td>
-    <td class="mono">${esc(r.repo||"—")}</td><td>${STAT(r.status)}</td><td>${rel(r.at)}</td></tr>`).join("")
+  $("c-rows").innerHTML=rows.length?rows.map(r=>`<tr><td><a class="mono" href="https://github.com/${esc(r.login)}" target="_blank">${esc(r.login||"—")}</a></td>
+    <td class="mono">${esc(r.email||"—")}</td><td>${SRC(r.emailSource)}</td><td class="mono">${esc(r.repo||"—")}</td><td>${STAT(r.status)}</td><td>${rel(r.at)}</td></tr>`).join("")
     :`<tr><td colspan="6" class="empty">No contacts match.</td></tr>`;
 }
 
-// Grafana-style refresh control
+$("addbtn").onclick=async()=>{const text=$("addbox").value.trim();if(!text){toast("Paste some owner/repo lines");return;}$("addbtn").disabled=true;
+  const r=await api("/api/queue",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text})});const j=await r.json().catch(()=>({}));$("addbtn").disabled=false;
+  if(r.ok){$("addbox").value="";toast(`Added ${j.added} repo${j.added===1?"":"s"}${j.warnings&&j.warnings.length?` · ${j.warnings.length} skipped`:""}`);refresh();}else toast(j.error||"Could not add");};
+$("saveBtn").onclick=async()=>{await api("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({autoTune:$("autoTune").checked,delayMs:+$("delayMs").value,maxStars:+$("maxStars").value,concurrency:+$("concurrency").value})});editing=false;toast("Saved");refresh();};
+$("enabled").onchange=async()=>{const on=$("enabled").checked;await api("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({paused:!on})});toast(on?"Automatic scraping on":"Paused");refresh();};
+$("autoTune").onchange=async()=>{const on=$("autoTune").checked;await api("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({autoTune:on})});toast(on?"Auto-tune on":"Auto-tune off");refresh();};
+document.addEventListener("click",async e=>{const rm=e.target.closest("[data-remove]");if(rm){const repo=rm.dataset.remove;if(!confirm(`Remove ${repo} from the queue?`))return;await api("/api/queue",{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({repo})});toast(`Removed ${repo}`);refresh();}});
+
 let timer=null;
-function tick(){refresh();if(curTab==="contacts")refreshContacts();}
+function tick(){refresh();}
 function applyRate(){const ms=+$("refreshRate").value;localStorage.setItem("sg_rate",String(ms));if(timer){clearInterval(timer);timer=null;}if(ms>0)timer=setInterval(tick,ms);}
 $("refreshRate").onchange=applyRate;
 $("refreshBtn").onclick=()=>{const b=$("refreshBtn");b.classList.remove("spin");void b.offsetWidth;b.classList.add("spin");tick();};

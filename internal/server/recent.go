@@ -60,7 +60,7 @@ func (s *RecentStore) Snapshot(repo, status string, limit int) ([]ContactRow, ma
 		n = s.head
 	}
 	out := make([]ContactRow, 0, limit)
-	counts := map[string]int{"total": 0, "sent": 0, "noreply": 0, "invalid": 0, "duplicate": 0}
+	counts := map[string]int{"total": 0, "scraped": 0, "noreply": 0, "none": 0, "failed": 0}
 	repoSet := map[string]struct{}{}
 	for i := 0; i < n; i++ {
 		idx := (s.head - 1 - i + 2*s.cap) % s.cap // newest-first

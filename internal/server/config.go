@@ -126,6 +126,7 @@ func getbool(key string, def bool) bool {
 func (c Config) InitialSettings() Settings {
 	return Settings{
 		Paused:       false,
+		AutoTune:     true,
 		ReposPerRun:  c.ReposPerRun,
 		MaxStars:     c.MaxStars,
 		DelayMs:      int(c.Delay / time.Millisecond),
