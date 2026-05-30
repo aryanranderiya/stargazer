@@ -84,6 +84,7 @@
   .badge{font-size:11px;font-weight:680;padding:3px 10px;border-radius:980px}
   .badge.active{background:var(--blue-bg);color:var(--blue)} .badge.done{background:var(--green-bg);color:var(--green)}
   .badge.err{background:var(--red-bg);color:var(--red)} .badge.wait{background:var(--gray-bg);color:var(--muted)}
+  .badge.rl{background:var(--orange-bg);color:var(--orange)}
   .track{height:9px;border-radius:6px;background:var(--surface-3);overflow:hidden}
   .track>i{display:block;height:100%;border-radius:6px;background:var(--blue);transition:width .6s cubic-bezier(.4,0,.2,1)}
   .track>i.done{background:var(--green)} .track>i.busy{background:linear-gradient(90deg,var(--blue),#5aa9ff,var(--blue));background-size:200% 100%;animation:flow 1.4s linear infinite}
@@ -281,7 +282,12 @@ async function refresh(){
   else{$("repos").innerHTML=repos.map(r=>{
     const total=r.totalStars,proc=r.processed||0,known=total>0,pct=known?Math.min(100,Math.round(proc/total*100)):0,done=known&&proc>=total;
     const isActive=r.repo===activeKey&&d.running&&!s.paused;
-    let badge=r.lastError?`<span class="badge err" title="${esc(r.lastError)}">error</span>`:done?`<span class="badge done">done</span>`:isActive?`<span class="badge active">scraping now</span>`:r.repo===activeKey?`<span class="badge wait">${s.paused?'queued':'next up'}</span>`:`<span class="badge wait">queued</span>`;
+    let badge;
+    if(r.lastError){const rl=/rate.?limit|\b429\b|\b403\b/i.test(r.lastError);badge=`<span class="badge ${rl?'rl':'err'}" title="${esc(r.lastError)}">${rl?'rate-limited · backing off':'error'}</span>`;}
+    else if(done)badge=`<span class="badge done">done</span>`;
+    else if(isActive)badge=`<span class="badge active">scraping now</span>`;
+    else if(r.repo===activeKey)badge=`<span class="badge wait">${s.paused?'queued':'next up'}</span>`;
+    else badge=`<span class="badge wait">queued</span>`;
     const bar=known?`<div class="track"><i class="${done?'done':(isActive?'busy':'')}" style="width:${Math.max(pct,isActive?2:0)}%"></i></div>`:`<div class="track idet"></div>`;
     const em=etaMap[r.repo]||{};
     let etaTxt="";

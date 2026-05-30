@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"stargazer/internal/repoqueue"
@@ -52,19 +53,36 @@ func workerLoop(ctx context.Context, runner *Runner, settings *SettingsStore, qu
 			continue
 		}
 		announcedIdle = false
-		if _, err := runner.Run("auto", []scraper.RepoTarget{repo}); err != nil {
+		report, err := runner.Run("auto", []scraper.RepoTarget{repo})
+		if err != nil {
 			log.Printf("worker: run error for %s/%s: %v", repo.Owner, repo.Repo, err)
 			if !sleep(ctx, 5*time.Second) {
 				return
 			}
 			continue
 		}
-		// Gentle gap between batches (the scrape itself is throttled by the
-		// per-call Delay; this just avoids back-to-back bursts).
-		if !sleep(ctx, 3*time.Second) {
+		// Cool down hard when GitHub throttled us; otherwise a gentle gap.
+		gap := 3 * time.Second
+		if rateLimitedReport(report) {
+			gap = 2 * time.Minute
+			log.Printf("worker: rate-limited — cooling down %s before the next pass", gap)
+		}
+		if !sleep(ctx, gap) {
 			return
 		}
 	}
+}
+
+func rateLimitedReport(rep *RunReport) bool {
+	if rep == nil {
+		return false
+	}
+	for _, r := range rep.Repos {
+		if strings.Contains(strings.ToLower(r.Error), "rate limit") {
+			return true
+		}
+	}
+	return false
 }
 
 // nextWithWork returns the FIRST repo in queue order that still has stargazers

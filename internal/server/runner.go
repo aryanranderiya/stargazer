@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -198,7 +199,8 @@ func (r *Runner) scrapeAndPush(runDir string, t scraper.RepoTarget, set Settings
 	}
 
 	r.repos.RecordRun(name, count, stats.Imported, rep.Error, time.Now())
-	r.autoTune(count, failed)
+	rateLimited := scrapeErr != nil && strings.Contains(strings.ToLower(scrapeErr.Error()), "rate limit")
+	r.autoTune(count, failed, rateLimited)
 
 	log.Printf("repo %s: offset=%d scraped=%d failed=%d sent=%d imported=%d skipped=%d suppressed=%d noreply=%d invalid=%d%s",
 		name, offset, count, failed, stats.Sent, stats.Imported, stats.Skipped, stats.Suppressed, stats.Noreply, stats.Invalid,
@@ -209,29 +211,42 @@ func (r *Runner) scrapeAndPush(runDir string, t scraper.RepoTarget, set Settings
 // autoTune nudges the per-call delay based on the batch's fetch-failure rate:
 // back off when failures climb (limits too aggressive), speed up when they're
 // negligible. Self-learns a sustainable pace within [50ms, 2000ms].
-func (r *Runner) autoTune(scraped, failed int) {
+func (r *Runner) autoTune(scraped, failed int, rateLimited bool) {
 	set := r.settings.Get()
-	if !set.AutoTune || scraped < 20 {
+	if !set.AutoTune {
 		return
 	}
-	rate := float64(failed) / float64(scraped)
 	cur := set.DelayMs
 	next := cur
+	reason := ""
 	switch {
-	case rate > 0.15:
-		next = cur*3/2 + 25
+	case rateLimited:
+		// GitHub throttled the whole pass — back off hard.
+		next = cur*2 + 50
 		if next > 2000 {
 			next = 2000
 		}
-	case rate < 0.03 && cur > 50:
-		next = cur * 4 / 5
-		if next < 50 {
-			next = 50
+		reason = "rate-limited"
+	case scraped >= 20:
+		rate := float64(failed) / float64(scraped)
+		switch {
+		case rate > 0.15:
+			next = cur*3/2 + 25
+			if next > 2000 {
+				next = 2000
+			}
+			reason = fmt.Sprintf("fail-rate=%.0f%%", rate*100)
+		case rate < 0.03 && cur > 60:
+			next = cur * 9 / 10
+			if next < 60 {
+				next = 60
+			}
+			reason = "clean"
 		}
 	}
 	if next != cur {
 		r.settings.Update(SettingsPatch{DelayMs: &next})
-		log.Printf("auto-tune: fail-rate=%.0f%% → delay %dms→%dms", rate*100, cur, next)
+		log.Printf("auto-tune: %s → delay %dms→%dms", reason, cur, next)
 	}
 }
 
