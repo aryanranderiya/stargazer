@@ -230,7 +230,7 @@
 const $=id=>document.getElementById(id);
 const fmt=n=>(n??0).toLocaleString();
 const esc=s=>(s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-let editing=false, lastHistory=[], rate=0;
+let editing=false, lastHistory=[], rate=0, lastReposKey="";
 ["delayMs","maxStars","concurrency"].forEach(id=>{$(id).addEventListener("focus",()=>editing=true);$(id).addEventListener("blur",()=>setTimeout(()=>editing=false,500));});
 function toast(m){const t=$("toast");t.textContent=m;t.classList.add("show");clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove("show"),2400);}
 function rel(ts){if(!ts||(""+ts).startsWith("0001"))return"not yet";const d=new Date(ts),s=(Date.now()-d)/1000;if(s<60)return Math.max(0,Math.floor(s))+"s ago";if(s<3600)return Math.floor(s/60)+"m ago";if(s<86400)return Math.floor(s/3600)+"h ago";return Math.floor(s/86400)+"d ago";}
@@ -319,7 +319,8 @@ const STAT=s=>`<span class="stat ${esc(s)}">${esc(STLBL[s]||s)}</span>`;
 async function refreshContacts(){
   let d;try{d=await(await api(`/api/contacts?repo=${encodeURIComponent($("c-repo").value)}&status=${encodeURIComponent($("c-status").value)}&limit=300`)).json();}catch(e){return;}
   const sel=$("c-repo").value;
-  if(d.repos)$("c-repo").innerHTML=`<option value="">all repos</option>`+d.repos.map(r=>`<option value="${esc(r)}" ${r===sel?'selected':''}>${esc(r)}</option>`).join("");
+  const rk=(d.repos||[]).join("|");
+  if(rk!==lastReposKey){lastReposKey=rk;$("c-repo").innerHTML=`<option value="">all repos</option>`+(d.repos||[]).map(r=>`<option value="${esc(r)}" ${r===sel?'selected':''}>${esc(r)}</option>`).join("");}
   const c=d.counts||{};
   $("c-chips").innerHTML=[["total","total"],["scraped","real email"],["noreply","no-reply"],["none","no email"],["failed","failed"]].map(([k,l])=>`<span class="cchip"><span class="n">${fmt(c[k])}</span> ${l}</span>`).join("");
   const rows=d.contacts||[];
