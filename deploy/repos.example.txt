@@ -1,0 +1,13 @@
+# stargazer repo queue — one owner/repo per line.
+# Blank lines and '#' comments are ignored; inline comments after the repo too.
+# Full github.com URLs are accepted and normalised. Add as many as you like;
+# the daily scheduler advances a persistent cursor through this list and wraps
+# around at the end (the email platform dedupes by email, so repeats are free).
+#
+# Copy/rename to repos.txt on the data volume, then add your targets:
+
+facebook/react
+vercel/next.js
+langchain-ai/langchain
+sveltejs/svelte
+denoland/deno

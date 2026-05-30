@@ -1,0 +1,183 @@
+package server
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"stargazer/internal/pusher"
+	"stargazer/internal/repoqueue"
+	"stargazer/internal/scraper"
+)
+
+// Runner executes scrape+push runs, serialised so only one runs at a time.
+type Runner struct {
+	cfg   Config
+	queue *repoqueue.Queue
+	push  *pusher.Client
+
+	mu      sync.Mutex
+	running bool
+	last    *RunReport
+	seq     int
+}
+
+// RepoReport is the per-repo outcome of a run.
+type RepoReport struct {
+	Repo  string       `json:"repo"`
+	Count int          `json:"scraped"`
+	Push  pusher.Stats `json:"push"`
+	Error string       `json:"error,omitempty"`
+}
+
+// RunReport summarises a single run.
+type RunReport struct {
+	StartedAt  time.Time    `json:"startedAt"`
+	FinishedAt time.Time    `json:"finishedAt"`
+	Trigger    string       `json:"trigger"` // "schedule" | "manual" | "startup"
+	Repos      []RepoReport `json:"repos"`
+	Error      string       `json:"error,omitempty"`
+}
+
+// NewRunner constructs a Runner.
+func NewRunner(cfg Config, q *repoqueue.Queue, p *pusher.Client) *Runner {
+	return &Runner{cfg: cfg, queue: q, push: p}
+}
+
+// Run scrapes and pushes a set of repos. With an empty override it pops the
+// next ReposPerRun repos from the queue (advancing the cursor); with an
+// override it scrapes exactly those repos without touching the cursor.
+func (r *Runner) Run(trigger string, override []scraper.RepoTarget) (*RunReport, error) {
+	r.mu.Lock()
+	if r.running {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("a scrape run is already in progress")
+	}
+	r.running = true
+	r.seq++
+	seq := r.seq
+	r.mu.Unlock()
+
+	defer func() {
+		r.mu.Lock()
+		r.running = false
+		r.mu.Unlock()
+	}()
+
+	report := &RunReport{StartedAt: time.Now(), Trigger: trigger}
+
+	targets := override
+	if len(targets) == 0 {
+		next, err := r.queue.Next(r.cfg.ReposPerRun)
+		if err != nil {
+			report.Error = err.Error()
+			report.FinishedAt = time.Now()
+			r.store(report)
+			return report, err
+		}
+		targets = next
+	}
+
+	// Scrape each run into a unique dir so the scraper never appends "_1" to a
+	// pre-existing CSV (which would make the output path nondeterministic).
+	runDir := filepath.Join(r.cfg.OutputDir, fmt.Sprintf("run-%d-%d", report.StartedAt.Unix(), seq))
+	defer os.RemoveAll(runDir) // CSVs already pushed; keep the volume tidy
+
+	for _, t := range targets {
+		report.Repos = append(report.Repos, r.scrapeAndPush(runDir, t))
+	}
+
+	report.FinishedAt = time.Now()
+	r.store(report)
+	log.Printf("run done (trigger=%s, repos=%d, took=%s)", trigger, len(report.Repos), report.FinishedAt.Sub(report.StartedAt).Truncate(time.Second))
+	return report, nil
+}
+
+func (r *Runner) scrapeAndPush(runDir string, t scraper.RepoTarget) RepoReport {
+	name := t.Owner + "/" + t.Repo
+	rep := RepoReport{Repo: name}
+
+	cfg := scraper.Config{
+		Repos:        []scraper.RepoTarget{t},
+		Tokens:       r.cfg.Tokens,
+		OutputDir:    runDir,
+		Concurrency:  r.cfg.Concurrency,
+		MaxRepos:     r.cfg.MaxRepos,
+		MaxForkRepos: r.cfg.MaxForkRepos,
+		MaxStars:     r.cfg.MaxStars,
+		Delay:        r.cfg.Delay,
+		UseSearchAPI: r.cfg.UseSearchAPI,
+		CachePath:    r.cfg.CachePath,
+	}
+
+	// Drain progress concurrently; scraper.Run sends Done (with Count) for the
+	// final repo and never closes the channel, so we close it ourselves.
+	progressCh := make(chan scraper.Progress, 256)
+	done := make(chan struct{})
+	var scrapeErr error
+	var count int
+	go func() {
+		defer close(done)
+		for p := range progressCh {
+			if p.Error != nil {
+				scrapeErr = p.Error
+			}
+			if p.Done {
+				count = p.Count
+			}
+		}
+	}()
+	scraper.Run(cfg, progressCh)
+	close(progressCh)
+	<-done
+
+	if scrapeErr != nil {
+		rep.Error = scrapeErr.Error()
+	}
+	rep.Count = count
+
+	csvPath := filepath.Join(runDir, t.Owner, t.Repo+".csv")
+	stats, perr := r.push.PushCSV(csvPath, name)
+	rep.Push = stats
+	if perr != nil {
+		if rep.Error != "" {
+			rep.Error += "; "
+		}
+		rep.Error += "push: " + perr.Error()
+	}
+
+	log.Printf("repo %s: scraped=%d sent=%d imported=%d skipped=%d suppressed=%d noreply=%d invalid=%d%s",
+		name, count, stats.Sent, stats.Imported, stats.Skipped, stats.Suppressed, stats.Noreply, stats.Invalid,
+		errSuffix(rep.Error))
+	return rep
+}
+
+func errSuffix(e string) string {
+	if e == "" {
+		return ""
+	}
+	return " err=" + e
+}
+
+func (r *Runner) store(report *RunReport) {
+	r.mu.Lock()
+	r.last = report
+	r.mu.Unlock()
+}
+
+// Last returns the most recent run report (nil if none yet).
+func (r *Runner) Last() *RunReport {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.last
+}
+
+// Running reports whether a run is currently in progress.
+func (r *Runner) Running() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.running
+}

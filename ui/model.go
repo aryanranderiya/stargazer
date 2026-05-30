@@ -17,6 +17,7 @@ import (
 
 	gh "stargazer/internal/github"
 	creds "stargazer/internal/credentials"
+	"stargazer/internal/repos"
 	scr "stargazer/internal/scraper"
 )
 
@@ -538,27 +539,7 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // parseSingleRepo normalises a single repo string (owner/repo or full URL).
 func parseSingleRepo(raw string) (string, string) {
-	s := strings.TrimSpace(raw)
-	for _, prefix := range []string{
-		"https://github.com/",
-		"http://github.com/",
-		"github.com/",
-	} {
-		if strings.HasPrefix(s, prefix) {
-			s = strings.TrimPrefix(s, prefix)
-			break
-		}
-	}
-	s = strings.TrimSuffix(s, ".git")
-	s = strings.TrimSuffix(s, "/")
-	if s == "" {
-		return s, ""
-	}
-	parts := strings.SplitN(s, "/", 3)
-	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
-		return s, "Format must be owner/repo (e.g. torvalds/linux)"
-	}
-	return parts[0] + "/" + parts[1], ""
+	return repos.ParseOne(raw)
 }
 
 // parseRepoInput handles comma-separated repos.
@@ -585,24 +566,7 @@ func parseRepoInput(raw string) (string, string) {
 
 // parseRepoTargets parses comma-separated repos into RepoTarget slices.
 func parseRepoTargets(raw string) ([]scr.RepoTarget, string) {
-	segments := strings.Split(raw, ",")
-	var targets []scr.RepoTarget
-	for _, seg := range segments {
-		seg = strings.TrimSpace(seg)
-		if seg == "" {
-			continue
-		}
-		n, warn := parseSingleRepo(seg)
-		if warn != "" {
-			return nil, warn
-		}
-		parts := strings.SplitN(n, "/", 2)
-		targets = append(targets, scr.RepoTarget{Owner: parts[0], Repo: parts[1]})
-	}
-	if len(targets) == 0 {
-		return nil, "At least one repository is required"
-	}
-	return targets, ""
+	return repos.ParseTargets(raw)
 }
 
 func (m Model) submit() (tea.Model, tea.Cmd) {
