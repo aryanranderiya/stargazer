@@ -203,20 +203,21 @@ async function refresh(){
   $("pausehint").textContent = s.paused ? "Off — paused. Flip on to resume scraping the queue." : (allDone?"On — queue fully walked; waiting for new repos.":"On — continuously scraping the queue.");
 
   // repos
-  const nextKey=q.next?`${q.next.Owner}/${q.next.Repo}`:null;
-  $("repos-hint").textContent=repos.length?`${repos.length} in queue · progress = stargazers walked ÷ total`:"";
+  let activeKey=null;
+  for(const r of repos){const dn=r.totalStars>0&&(r.processed||0)>=r.totalStars;if(!dn){activeKey=r.repo;break;}}
+  $("repos-hint").textContent=repos.length?`${repos.length} in queue · sequential, one repo fully then the next · progress = walked ÷ total`:"";
   if(!repos.length){$("repos").innerHTML=`<div class="card empty">No repositories yet — paste some above and they'll start scraping.</div>`;}
   else{
     $("repos").innerHTML=repos.map(r=>{
       const total=r.totalStars,proc=r.processed||0,known=total>0;
       const pct=known?Math.min(100,Math.round(proc/total*100)):0;
       const done=known&&proc>=total;
-      const isActive=d.running&&r.repo===nextKey&&!s.paused;
+      const isActive=r.repo===activeKey&&d.running&&!s.paused;
       let badge;
       if(r.lastError)badge=`<span class="badge err" title="${esc(r.lastError)}">error</span>`;
       else if(done)badge=`<span class="badge done">done</span>`;
       else if(isActive)badge=`<span class="badge active">scraping now</span>`;
-      else if(r.repo===nextKey&&!s.paused)badge=`<span class="badge wait">next up</span>`;
+      else if(r.repo===activeKey)badge=`<span class="badge wait">${s.paused?'queued':'next up'}</span>`;
       else badge=`<span class="badge wait">queued</span>`;
       const bar=known?`<div class="track"><i class="${done?'done':(isActive?'busy':'')}" style="width:${Math.max(pct, isActive?2:0)}%"></i></div>`:`<div class="track idet"></div>`;
       const totalTxt=known?`${fmt(proc)} / ${fmt(total)} stars walked`:`fetching star count…`;

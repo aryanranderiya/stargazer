@@ -20,7 +20,6 @@ func StartWorker(ctx context.Context, runner *Runner, settings *SettingsStore, q
 }
 
 func workerLoop(ctx context.Context, runner *Runner, settings *SettingsStore, queue *repoqueue.Queue, repos *RepoStore) {
-	cursor := 0
 	announcedIdle := false
 	log.Printf("worker: started (continuous queue mode)")
 	for {
@@ -41,7 +40,7 @@ func workerLoop(ctx context.Context, runner *Runner, settings *SettingsStore, qu
 			}
 			continue
 		}
-		repo, ok := nextWithWork(targets, repos, &cursor)
+		repo, ok := nextWithWork(targets, repos)
 		if !ok {
 			if !announcedIdle {
 				log.Printf("worker: queue fully walked — idling until new repos are added")
@@ -68,17 +67,14 @@ func workerLoop(ctx context.Context, runner *Runner, settings *SettingsStore, qu
 	}
 }
 
-// nextWithWork returns the next repo (from cursor, wrapping once) that still has
-// stargazers left to walk. A repo with an unknown total (-1) is considered to
-// have work (its total gets fetched on the first scrape).
-func nextWithWork(targets []scraper.RepoTarget, repos *RepoStore, cursor *int) (scraper.RepoTarget, bool) {
-	n := len(targets)
-	for i := 0; i < n; i++ {
-		idx := (*cursor + i) % n
-		t := targets[idx]
+// nextWithWork returns the FIRST repo in queue order that still has stargazers
+// left to walk — so a repo is fully exhausted before the next one is touched
+// (strictly sequential, one repo at a time). A repo with an unknown total (-1)
+// is considered to have work (its total is fetched on the first scrape).
+func nextWithWork(targets []scraper.RepoTarget, repos *RepoStore) (scraper.RepoTarget, bool) {
+	for _, t := range targets {
 		processed, total := repos.Progress(t.Owner + "/" + t.Repo)
 		if total < 0 || processed < total {
-			*cursor = idx + 1
 			return t, true
 		}
 	}
