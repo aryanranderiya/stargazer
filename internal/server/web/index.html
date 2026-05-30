@@ -88,6 +88,24 @@
   .tag{font-size:11px;font-weight:600;padding:2px 8px;border-radius:980px;background:var(--surface-2);border:1px solid var(--line);color:var(--muted)} .err{color:var(--red)}
   .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--text);color:var(--bg);padding:12px 20px;border-radius:13px;font-size:14px;font-weight:550;opacity:0;transition:.25s;pointer-events:none;box-shadow:var(--shadow);z-index:50}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0)} .foot{color:var(--faint);font-size:12px;text-align:center;margin-top:30px}
+  .tabs{display:flex;gap:2px;background:var(--surface-2);border:1px solid var(--line);border-radius:980px;padding:3px;margin-left:4px}
+  .tab{font:inherit;font-size:13px;font-weight:550;border:0;background:transparent;color:var(--muted);padding:5px 14px;border-radius:980px;cursor:pointer}
+  .tab.active{background:var(--surface);color:var(--text);box-shadow:var(--shadow)}
+  .refresh{display:flex;align-items:center;gap:6px}
+  .rbtn{font:inherit;font-size:15px;line-height:1;border:1px solid var(--line);background:var(--surface);color:var(--text);width:32px;height:32px;border-radius:9px;cursor:pointer}
+  .rbtn:active{transform:scale(.94)} .rbtn.spin{animation:spin .6s ease}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .rsel{font:inherit;font-size:13px;background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:9px;padding:6px 8px}
+  .filters{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+  .filters label{font-size:12px;color:var(--muted);display:flex;gap:6px;align-items:center}
+  .filters select{font:inherit;font-size:13px;background:var(--surface-2);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:7px 10px}
+  .cchips{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto}
+  .cchip{font-size:12px;font-weight:600;padding:4px 11px;border-radius:980px;background:var(--surface-2);border:1px solid var(--line)} .cchip .n{font-variant-numeric:tabular-nums}
+  .src{font-size:11px;font-weight:600;padding:2px 8px;border-radius:980px;background:var(--surface-2);border:1px solid var(--line);color:var(--muted)}
+  .src.profile{color:var(--green)} .src.commit,.src.events,.src.search{color:var(--blue)} .src.noreply{color:var(--orange)}
+  .stat{font-size:11px;font-weight:600;padding:2px 9px;border-radius:980px}
+  .stat.sent{background:var(--green-bg);color:var(--green)} .stat.noreply{background:color-mix(in srgb,var(--orange) 16%,transparent);color:var(--orange)}
+  .stat.invalid{background:color-mix(in srgb,var(--red) 14%,transparent);color:var(--red)} .stat.duplicate{background:var(--surface-2);color:var(--muted);border:1px solid var(--line)}
 </style>
 </head>
 <body>
@@ -95,16 +113,20 @@
   <div class="bar">
     <span class="brand"><span class="star">✦</span> Stargazer</span>
     <span class="chip" id="hstatus"><span class="dot" id="hdot"></span><span id="hstate">—</span></span>
+    <nav class="tabs"><button class="tab active" data-tab="overview">Overview</button><button class="tab" data-tab="contacts">Contacts</button></nav>
     <span class="spacer"></span>
-    <div class="hmeta">
-      <span>Queue <b id="m-queue">—</b></span>
-      <span>Pace <b id="m-pace">—</b></span>
-      <span>Tokens <b id="m-tokens">—</b></span>
+    <div class="hmeta"><span>Queue <b id="m-queue">—</b></span><span>Pace <b id="m-pace">—</b></span><span>Tokens <b id="m-tokens">—</b></span></div>
+    <div class="refresh">
+      <button class="rbtn" id="refreshBtn" title="Refresh now">↻</button>
+      <select class="rsel" id="refreshRate" title="Auto-refresh interval">
+        <option value="0">Off</option><option value="2000">2s</option><option value="3000" selected>3s</option><option value="5000">5s</option><option value="10000">10s</option><option value="30000">30s</option><option value="60000">1m</option>
+      </select>
     </div>
   </div>
 </header>
 
 <main>
+  <div id="view-overview">
   <section style="margin-top:8px">
     <div class="kpis">
       <div class="card kpi hero"><div class="v num" id="k-imported">—</div><div class="k">Emails ingested → Scraped audience</div><div class="sub" id="k-source">source = stargazer:owner/repo</div></div>
@@ -161,6 +183,27 @@
       </table>
     </div>
   </section>
+
+  </div><!-- /view-overview -->
+
+  <div id="view-contacts" hidden>
+    <section style="margin-top:8px">
+      <div class="h"><h2>Live contacts</h2><span class="hint">most recent scrape results — usernames, emails &amp; outcomes, like the CLI stream (newest first)</span></div>
+      <div class="card pad">
+        <div class="filters">
+          <label>Repo <select id="c-repo"><option value="">all repos</option></select></label>
+          <label>Status <select id="c-status"><option value="">all</option><option value="sent">ingested</option><option value="noreply">no-reply</option><option value="invalid">invalid</option><option value="duplicate">duplicate</option></select></label>
+          <div class="cchips" id="c-chips"></div>
+        </div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr><th>User</th><th>Email</th><th>Source</th><th>Repo</th><th>Outcome</th><th>When</th></tr></thead>
+            <tbody id="c-rows"><tr><td colspan="6" class="empty">No contacts scraped yet — they'll stream in here as scraping runs.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </div>
 
   <div class="foot" id="foot"></div>
 </main>
@@ -270,7 +313,42 @@ document.addEventListener("click",async e=>{
   if(rm){const repo=rm.dataset.remove;if(!confirm(`Remove ${repo} from the queue?`))return;
     await api("/api/queue",{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({repo})});toast(`Removed ${repo}`);refresh();}
 });
-refresh();setInterval(refresh,3000);
+// tabs
+let curTab="overview";
+document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{
+  curTab=b.dataset.tab;
+  document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active",x===b));
+  $("view-overview").hidden=curTab!=="overview";
+  $("view-contacts").hidden=curTab!=="contacts";
+  if(curTab==="contacts")refreshContacts();
+});
+$("c-repo").onchange=refreshContacts;$("c-status").onchange=refreshContacts;
+
+const SRC=s=>`<span class="src ${esc((s||'').toLowerCase())}">${esc(s||"—")}</span>`;
+const STAT=s=>`<span class="stat ${esc(s)}">${esc(s==='sent'?'ingested':s)}</span>`;
+async function refreshContacts(){
+  let d;try{d=await(await api(`/api/contacts?repo=${encodeURIComponent($("c-repo").value)}&status=${encodeURIComponent($("c-status").value)}&limit=300`)).json();}catch(e){return;}
+  const sel=$("c-repo").value;
+  if(d.repos){$("c-repo").innerHTML=`<option value="">all repos</option>`+d.repos.map(r=>`<option value="${esc(r)}" ${r===sel?'selected':''}>${esc(r)}</option>`).join("");}
+  const c=d.counts||{};
+  $("c-chips").innerHTML=[["total","total"],["sent","ingested"],["noreply","no-reply"],["invalid","invalid"],["duplicate","duplicate"]]
+    .map(([k,lbl])=>`<span class="cchip"><span class="n">${fmt(c[k])}</span> ${lbl}</span>`).join("");
+  const rows=d.contacts||[];
+  $("c-rows").innerHTML=rows.length?rows.map(r=>`<tr>
+    <td><a class="mono" href="https://github.com/${esc(r.login)}" target="_blank">${esc(r.login||"—")}</a></td>
+    <td class="mono">${esc(r.email||"—")}</td><td>${SRC(r.emailSource)}</td>
+    <td class="mono">${esc(r.repo||"—")}</td><td>${STAT(r.status)}</td><td>${rel(r.at)}</td></tr>`).join("")
+    :`<tr><td colspan="6" class="empty">No contacts match.</td></tr>`;
+}
+
+// Grafana-style refresh control
+let timer=null;
+function tick(){refresh();if(curTab==="contacts")refreshContacts();}
+function applyRate(){const ms=+$("refreshRate").value;localStorage.setItem("sg_rate",String(ms));if(timer){clearInterval(timer);timer=null;}if(ms>0)timer=setInterval(tick,ms);}
+$("refreshRate").onchange=applyRate;
+$("refreshBtn").onclick=()=>{const b=$("refreshBtn");b.classList.remove("spin");void b.offsetWidth;b.classList.add("spin");tick();};
+const savedRate=localStorage.getItem("sg_rate");if(savedRate!==null)$("refreshRate").value=savedRate;
+tick();applyRate();
 </script>
 </body>
 </html>

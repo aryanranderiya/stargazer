@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,17 +26,19 @@ type Server struct {
 	settings *SettingsStore
 	stats    *StatsStore
 	repos    *RepoStore
+	recent   *RecentStore
 	http     *http.Server
 }
 
 // New builds the HTTP server and routes.
-func New(cfg Config, q *repoqueue.Queue, runner *Runner, settings *SettingsStore, stats *StatsStore, repoStore *RepoStore) *Server {
-	s := &Server{cfg: cfg, queue: q, runner: runner, settings: settings, stats: stats, repos: repoStore}
+func New(cfg Config, q *repoqueue.Queue, runner *Runner, settings *SettingsStore, stats *StatsStore, repoStore *RepoStore, recent *RecentStore) *Server {
+	s := &Server{cfg: cfg, queue: q, runner: runner, settings: settings, stats: stats, repos: repoStore, recent: recent}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/history", s.handleHistory)
+	mux.HandleFunc("/api/contacts", s.handleContacts)
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/scrape", s.handleScrape)
 	mux.HandleFunc("/api/queue", s.handleQueue)
@@ -102,6 +105,20 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleHistory(w http.ResponseWriter, _ *http.Request) {
 	_, history := s.stats.Snapshot()
 	writeJSON(w, http.StatusOK, history)
+}
+
+// handleContacts serves the live recently-scraped contacts, filterable by
+// ?repo= and ?status=, with per-status counts.
+func (s *Server) handleContacts(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit := 200
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	rows, counts, repos := s.recent.Snapshot(q.Get("repo"), q.Get("status"), limit)
+	writeJSON(w, http.StatusOK, map[string]any{"contacts": rows, "counts": counts, "repos": repos})
 }
 
 // handleQueue: GET snapshot+progress, POST to add repos, DELETE to remove one.

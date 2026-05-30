@@ -34,6 +34,25 @@ type Client struct {
 	PushNoreply bool   // include *@users.noreply.github.com addresses
 	BatchSize   int    // contacts per request (default 500)
 	HTTP        *http.Client
+
+	// OnContact, if set, is called once per CSV row with the per-row outcome —
+	// used to feed a live "recent contacts" view.
+	OnContact func(Record)
+}
+
+// Record is the per-row outcome reported via OnContact.
+type Record struct {
+	Login       string `json:"login"`
+	Email       string `json:"email"`
+	EmailSource string `json:"emailSource"` // profile | commit | events | search | noreply
+	Repo        string `json:"repo"`
+	Status      string `json:"status"` // sent | noreply | invalid | duplicate
+}
+
+func (c *Client) emit(r Record) {
+	if c.OnContact != nil {
+		c.OnContact(r)
+	}
 }
 
 // Contact is the import payload shape expected by the platform.
@@ -167,19 +186,24 @@ func (c *Client) PushCSV(path, sourceRepo string) (Stats, error) {
 		}
 
 		email := strings.ToLower(get("email"))
+		login, esrc := get("login"), get("email_source")
 		if email == "" || !emailRe.MatchString(email) {
 			stats.Invalid++
+			c.emit(Record{Login: login, Email: get("email"), EmailSource: esrc, Repo: sourceRepo, Status: "invalid"})
 			continue
 		}
 		if !c.PushNoreply && strings.HasSuffix(email, noreplySuffix) {
 			stats.Noreply++
+			c.emit(Record{Login: login, Email: email, EmailSource: esrc, Repo: sourceRepo, Status: "noreply"})
 			continue
 		}
 		if _, dup := seen[email]; dup {
 			stats.Duplicate++
+			c.emit(Record{Login: login, Email: email, EmailSource: esrc, Repo: sourceRepo, Status: "duplicate"})
 			continue
 		}
 		seen[email] = struct{}{}
+		c.emit(Record{Login: login, Email: email, EmailSource: esrc, Repo: sourceRepo, Status: "sent"})
 
 		first, last := splitName(get("name"))
 		attrs := map[string]any{}
