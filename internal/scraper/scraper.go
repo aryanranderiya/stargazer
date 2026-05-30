@@ -331,7 +331,17 @@ func runRepo(client *gh.Client, cfg Config, repo RepoTarget, outputPath string, 
 		}
 		dispatchPrefetched(pending)
 
-		if fetchErr := <-fetchErrCh; fetchErr != nil && total == 0 {
+		// StreamStargazers only sends on errCh for a fatal fetch error with no
+		// stargazers retrieved; on success or a maxCount early-stop it sends
+		// nothing. Any error is buffered before its out channel closes, so it
+		// is already available here — a non-blocking receive avoids deadlocking
+		// on the (common) no-error and capped paths.
+		var fetchErr error
+		select {
+		case fetchErr = <-fetchErrCh:
+		default:
+		}
+		if fetchErr != nil && total == 0 {
 			producerErr = fetchErr
 			close(workCh)
 			wg.Wait()
