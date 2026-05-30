@@ -90,7 +90,6 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		"settings":  s.settings.Get(),
 		"totals":    totals,
 		"lastRun":   lastRun,
-		"schedule":  s.cfg.ScrapeAt,
 		"tokens":    len(s.cfg.Tokens),
 		"listId":    s.cfg.EmailListID,
 		"emailApi":  s.cfg.EmailAPIURL,

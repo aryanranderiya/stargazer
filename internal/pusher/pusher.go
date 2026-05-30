@@ -121,6 +121,13 @@ func (c *Client) PushCSV(path, sourceRepo string) (Stats, error) {
 	}
 	idx := indexColumns(header)
 
+	// Per-repo source so contacts are attributable + filterable by repo in the
+	// email platform (e.g. "stargazer:facebook/react").
+	contactSource := c.source()
+	if sourceRepo != "" {
+		contactSource = contactSource + ":" + sourceRepo
+	}
+
 	var stats Stats
 	seen := make(map[string]struct{})
 	batch := make([]Contact, 0, c.batchSize())
@@ -199,7 +206,7 @@ func (c *Client) PushCSV(path, sourceRepo string) (Stats, error) {
 			LastName:   last,
 			Company:    get("company"),
 			Attributes: attrs,
-			Source:     c.source(),
+			Source:     contactSource,
 			Tags:       tags,
 		})
 		if len(batch) >= c.batchSize() {

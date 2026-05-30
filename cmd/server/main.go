@@ -63,26 +63,17 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if err := server.StartScheduler(ctx, cfg, runner); err != nil {
-		log.Fatalf("scheduler: %v", err)
-	}
-
 	// Populate total star counts for already-queued repos so the dashboard
 	// shows their progress bars without waiting for the first scrape.
 	go runner.RefreshTotals(queue.AllTargets())
 
-	if cfg.RunOnStart {
-		go func() {
-			log.Printf("RUN_ON_START set — kicking off an immediate run")
-			if _, err := runner.Run("startup", nil); err != nil {
-				log.Printf("startup run error: %v", err)
-			}
-		}()
-	}
+	// Continuous queue worker: scrapes repos automatically (no schedule),
+	// deep-walking each until done. Pausable via settings.
+	server.StartWorker(ctx, runner, settings, queue, repoStore)
 
 	go func() {
-		log.Printf("stargazer-server listening on %s (tokens=%d, schedule=%q, reposPerRun=%d, pushNoreply=%t)",
-			cfg.Addr, len(cfg.Tokens), cfg.ScrapeAt, cfg.ReposPerRun, cfg.PushNoreply)
+		log.Printf("stargazer-server listening on %s (tokens=%d, reposPerRun=%d, maxStars=%d, delayMs=%d, pushNoreply=%t)",
+			cfg.Addr, len(cfg.Tokens), cfg.ReposPerRun, cfg.MaxStars, int(cfg.Delay.Milliseconds()), cfg.PushNoreply)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("http: %v", err)
 		}

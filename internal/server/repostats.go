@@ -61,6 +61,16 @@ func (s *RepoStore) Offset(repo string) int {
 	return 0
 }
 
+// Progress returns (processed, total) for repo; total is -1 when unknown.
+func (s *RepoStore) Progress(repo string) (processed, total int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p := s.m[repo]; p != nil {
+		return p.Processed, p.TotalStars
+	}
+	return 0, -1
+}
+
 // NeedsTotal reports whether the total star count is still unknown for repo.
 func (s *RepoStore) NeedsTotal(repo string) bool {
 	s.mu.Lock()

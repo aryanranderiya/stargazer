@@ -113,8 +113,8 @@ func TestPushCSV(t *testing.T) {
 	if octo.Company != "GitHub" {
 		t.Errorf("company = %q, want GitHub", octo.Company)
 	}
-	if octo.Source != "stargazer" {
-		t.Errorf("source = %q, want stargazer", octo.Source)
+	if octo.Source != "stargazer:octo/repo" {
+		t.Errorf("source = %q, want stargazer:octo/repo", octo.Source)
 	}
 	if octo.Attributes["github_login"] != "octocat" {
 		t.Errorf("attributes.github_login = %v, want octocat", octo.Attributes["github_login"])

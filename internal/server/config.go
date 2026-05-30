@@ -38,10 +38,6 @@ type Config struct {
 	Delay        time.Duration
 	UseSearchAPI bool
 
-	// Scheduling ("HH:MM" 24h, server local time; empty disables the scheduler)
-	ScrapeAt   string
-	RunOnStart bool
-
 	// Storage (mounted volume)
 	DataDir      string
 	ReposPath    string
@@ -69,8 +65,6 @@ func FromEnv() (Config, error) {
 		Concurrency:    getint("CONCURRENCY", 5),
 		Delay:          time.Duration(getint("REQUEST_DELAY_MS", 150)) * time.Millisecond,
 		UseSearchAPI:   getbool("USE_SEARCH_API", false),
-		ScrapeAt:       getenv("SCRAPE_AT", "03:00"),
-		RunOnStart:     getbool("RUN_ON_START", false),
 		DataDir:        getenv("DATA_DIR", "/data"),
 	}
 
@@ -97,11 +91,6 @@ func FromEnv() (Config, error) {
 	}
 	if c.EmailListID == "" {
 		return c, fmt.Errorf("EMAIL_LIST_ID is required")
-	}
-	if strings.TrimSpace(c.ScrapeAt) != "" {
-		if _, _, err := parseDaily(c.ScrapeAt); err != nil {
-			return c, fmt.Errorf("invalid SCRAPE_AT %q (want HH:MM): %w", c.ScrapeAt, err)
-		}
 	}
 	return c, nil
 }
