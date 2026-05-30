@@ -267,6 +267,15 @@ async function refresh(){
 
   let activeKey=null;
   for(const r of repos){const dn=r.totalStars>0&&(r.processed||0)>=r.totalStars;if(!dn){activeKey=r.repo;break;}}
+  // Cumulative ETA: the queue is sequential, so each repo only starts after the
+  // ones ahead finish. Accumulate remaining time down the queue.
+  let cum=0; const etaMap={};
+  for(const r of repos){
+    const tot=r.totalStars,pr=r.processed||0,kn=tot>0,dn=kn&&pr>=tot;
+    if(dn){etaMap[r.repo]={done:true};continue;}
+    if(kn&&rate>0){cum+=Math.max(0,tot-pr)/rate;etaMap[r.repo]={sec:cum};}
+    else etaMap[r.repo]={unknown:true};
+  }
   $("repos-hint").textContent=repos.length?`${repos.length} in queue · sequential, one fully then the next`:"";
   if(!repos.length){$("repos").innerHTML=`<div class="card empty">No repositories yet — paste some above.</div>`;}
   else{$("repos").innerHTML=repos.map(r=>{
@@ -274,10 +283,11 @@ async function refresh(){
     const isActive=r.repo===activeKey&&d.running&&!s.paused;
     let badge=r.lastError?`<span class="badge err" title="${esc(r.lastError)}">error</span>`:done?`<span class="badge done">done</span>`:isActive?`<span class="badge active">scraping now</span>`:r.repo===activeKey?`<span class="badge wait">${s.paused?'queued':'next up'}</span>`:`<span class="badge wait">queued</span>`;
     const bar=known?`<div class="track"><i class="${done?'done':(isActive?'busy':'')}" style="width:${Math.max(pct,isActive?2:0)}%"></i></div>`:`<div class="track idet"></div>`;
-    const remain=known?Math.max(0,total-proc):0;
+    const em=etaMap[r.repo]||{};
     let etaTxt="";
-    if(known&&!done&&rate>0){const sec=remain/rate;etaTxt=` · <span class="eta">~${human(sec)} left · done ${etaDate(sec)}</span>`;}
-    else if(done)etaTxt=" · ✓ complete";
+    if(em.done)etaTxt=" · ✓ complete";
+    else if(em.sec!=null)etaTxt=` · <span class="eta">~${human(em.sec)} left · done ${etaDate(em.sec)}</span>`;
+    else if(em.unknown)etaTxt=" · calculating…";
     const totalTxt=known?`${fmt(proc)} / ${fmt(total)} stars`:`fetching star count…`;
     return `<div class="card repo">
       <div class="top"><a class="name mono" href="https://github.com/${esc(r.repo)}" target="_blank">${esc(r.repo)}</a>${badge}<span class="grow"></span>
