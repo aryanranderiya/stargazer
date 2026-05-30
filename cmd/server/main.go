@@ -54,8 +54,10 @@ func main() {
 		log.Printf("email import API reachable at %s (list %s)", cfg.EmailAPIURL, cfg.EmailListID)
 	}
 
-	runner := server.NewRunner(cfg, queue, push)
-	srv := server.New(cfg, queue, runner)
+	settings := server.NewSettingsStore(cfg.SettingsPath, cfg.InitialSettings())
+	stats := server.NewStatsStore(cfg.StatsPath, 50)
+	runner := server.NewRunner(cfg, queue, push, settings, stats)
+	srv := server.New(cfg, queue, runner, settings, stats)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

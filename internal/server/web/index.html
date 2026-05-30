@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Stargazer</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#ffffff; --text:#1d1d1f; --muted:#6e6e73;
+    --line:#e3e3e6; --accent:#0071e3; --accent-press:#0058b0;
+    --green:#34c759; --orange:#ff9f0a; --red:#ff3b30; --gray:#8e8e93;
+    --shadow:0 1px 3px rgba(0,0,0,.06),0 8px 28px rgba(0,0,0,.06);
+    --radius:20px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#000000; --card:#1c1c1e; --text:#f5f5f7; --muted:#98989d;
+      --line:#2c2c2e; --accent:#0a84ff; --accent-press:#0070e0; --shadow:0 1px 3px rgba(0,0,0,.5);
+    }
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Segoe UI",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased; line-height:1.45;
+    padding:40px 20px 80px;
+  }
+  .wrap{max-width:1080px;margin:0 auto}
+  header{display:flex;align-items:center;gap:14px;margin-bottom:8px}
+  .logo{width:30px;height:30px;display:grid;place-items:center;font-size:24px;filter:saturate(1.1)}
+  h1{font-size:26px;font-weight:650;letter-spacing:-.02em;margin:0}
+  .sub{color:var(--muted);font-size:14px;margin:0 0 26px 44px;letter-spacing:-.01em}
+  .pills{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:26px}
+  .pill{display:inline-flex;align-items:center;gap:7px;background:var(--card);border:1px solid var(--line);
+        border-radius:980px;padding:7px 14px;font-size:13px;font-weight:500;box-shadow:var(--shadow)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--gray);flex:none}
+  .dot.on{background:var(--green);box-shadow:0 0 0 4px rgba(52,199,89,.16)}
+  .dot.busy{background:var(--accent);box-shadow:0 0 0 4px rgba(10,132,255,.18);animation:pulse 1.2s infinite}
+  .dot.paused{background:var(--orange);box-shadow:0 0 0 4px rgba(255,159,10,.18)}
+  @keyframes pulse{50%{opacity:.4}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:24px}
+  .grid{display:grid;gap:16px}
+  .hero{display:flex;flex-direction:column;gap:2px;margin-bottom:16px}
+  .hero .big{font-size:64px;font-weight:680;letter-spacing:-.03em;line-height:1}
+  .hero .lbl{color:var(--muted);font-size:15px;letter-spacing:-.01em}
+  .metrics{grid-template-columns:repeat(4,1fr);margin-bottom:16px}
+  @media(max-width:820px){.metrics{grid-template-columns:repeat(2,1fr)}}
+  .metric .n{font-size:28px;font-weight:620;letter-spacing:-.02em}
+  .metric .k{color:var(--muted);font-size:13px;margin-top:2px}
+  .cols{grid-template-columns:1fr 1fr}
+  @media(max-width:820px){.cols{grid-template-columns:1fr}}
+  h2{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:0 0 16px}
+  .row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--line);font-size:14px}
+  .row:last-child{border-bottom:0}
+  .row .k{color:var(--muted)} .row .v{font-weight:550;font-variant-numeric:tabular-nums}
+  .progress{height:8px;border-radius:6px;background:var(--line);overflow:hidden;margin:6px 0 14px}
+  .progress > i{display:block;height:100%;background:var(--accent);border-radius:6px;transition:width .5s ease}
+  .field{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+  .field label{font-size:14px;color:var(--muted)}
+  input[type=number],input[type=text]{
+    font:inherit;font-size:14px;background:var(--bg);color:var(--text);border:1px solid var(--line);
+    border-radius:10px;padding:8px 11px;width:130px;text-align:right;outline:none}
+  input[type=text]{text-align:left;width:200px}
+  input:focus{border-color:var(--accent)}
+  .btn{font:inherit;font-size:14px;font-weight:550;border:0;border-radius:12px;padding:10px 18px;cursor:pointer;
+       background:var(--accent);color:#fff;transition:.15s;letter-spacing:-.01em}
+  .btn:hover{background:var(--accent-press)} .btn:active{transform:scale(.98)}
+  .btn.sec{background:var(--bg);color:var(--text);border:1px solid var(--line)}
+  .btn.warn{background:var(--orange)} .btn.warn:hover{filter:brightness(.95)}
+  .btn[disabled]{opacity:.5;cursor:not-allowed}
+  .btnrow{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+  .switch{position:relative;width:50px;height:30px;flex:none}
+  .switch input{opacity:0;width:0;height:0}
+  .slider{position:absolute;inset:0;background:var(--line);border-radius:980px;transition:.2s;cursor:pointer}
+  .slider::before{content:"";position:absolute;height:26px;width:26px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.3)}
+  .switch input:checked + .slider{background:var(--green)}
+  .switch input:checked + .slider::before{transform:translateX(20px)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:right;color:var(--muted);font-weight:500;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th:first-child,td:first-child{text-align:left}
+  td{padding:9px 10px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums;white-space:nowrap}
+  tr:last-child td{border-bottom:0}
+  .tag{font-size:11px;font-weight:600;padding:2px 8px;border-radius:980px;background:var(--bg);border:1px solid var(--line);color:var(--muted)}
+  .err{color:var(--red)}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+  .mt{margin-top:16px}
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--text);color:var(--bg);
+         padding:12px 20px;border-radius:14px;font-size:14px;font-weight:500;opacity:0;transition:.25s;pointer-events:none;box-shadow:var(--shadow)}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .foot{color:var(--muted);font-size:12px;text-align:center;margin-top:28px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">✦</div>
+    <h1>Stargazer</h1>
+  </header>
+  <p class="sub">GitHub stargazer → email contact pipeline</p>
+
+  <div class="pills" id="pills"></div>
+
+  <div class="card">
+    <div class="hero">
+      <div class="big" id="hero-imported">—</div>
+      <div class="lbl">emails ingested into the email platform</div>
+    </div>
+  </div>
+
+  <div class="grid metrics mt" id="metrics"></div>
+
+  <div class="grid cols">
+    <div class="card">
+      <h2>Queue progress</h2>
+      <div class="progress"><i id="qbar" style="width:0%"></i></div>
+      <div class="row"><span class="k">Position</span><span class="v" id="q-pos">—</span></div>
+      <div class="row"><span class="k">Next repo</span><span class="v mono" id="q-next">—</span></div>
+      <div class="row"><span class="k">Full passes</span><span class="v" id="q-cycles">—</span></div>
+      <div class="row"><span class="k">Last run</span><span class="v" id="q-last">—</span></div>
+      <div class="row"><span class="k">Pushing to list</span><span class="v mono" id="q-list">—</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Controls — slow it down or pause</h2>
+      <div class="field">
+        <label for="paused">Scraping</label>
+        <label class="switch"><input type="checkbox" id="paused"><span class="slider"></span></label>
+      </div>
+      <div class="field"><label>Repos per day</label><input type="number" id="reposPerRun" min="1" step="1"></div>
+      <div class="field"><label>Max stars / repo (0 = all)</label><input type="number" id="maxStars" min="0" step="50"></div>
+      <div class="field"><label>Delay between calls (ms)</label><input type="number" id="delayMs" min="0" step="50"></div>
+      <div class="field"><label>Concurrency</label><input type="number" id="concurrency" min="1" max="20" step="1"></div>
+      <div class="btnrow">
+        <button class="btn" id="save">Save settings</button>
+        <button class="btn sec" id="scrapeNow">Scrape next now</button>
+      </div>
+      <div class="btnrow mt">
+        <input type="text" id="adhoc" placeholder="owner/repo (ad-hoc)">
+        <button class="btn sec" id="scrapeRepo">Scrape this repo</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card mt">
+    <h2>Run history</h2>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>When</th><th>Trigger</th><th>Repos</th><th>Scraped</th>
+          <th>Imported</th><th>Existing</th><th>Suppressed</th><th>No-reply</th><th>Invalid</th><th>Took</th>
+        </tr></thead>
+        <tbody id="history"><tr><td colspan="10" style="color:var(--muted);text-align:center;padding:24px">No runs yet</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="foot" id="foot"></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmt = n => (n ?? 0).toLocaleString();
+let editing = false; // pause polling overwrites while user edits inputs
+["reposPerRun","maxStars","delayMs","concurrency","adhoc"].forEach(id=>{
+  $(id).addEventListener('focus',()=>editing=true);
+  $(id).addEventListener('blur',()=>setTimeout(()=>editing=false,400));
+});
+
+function toast(msg){const t=$("toast");t.textContent=msg;t.classList.add("show");setTimeout(()=>t.classList.remove("show"),2200);}
+function rel(ts){
+  if(!ts || ts.startsWith("0001")) return "never";
+  const d=new Date(ts), s=(Date.now()-d.getTime())/1000;
+  if(s<60) return Math.floor(s)+"s ago";
+  if(s<3600) return Math.floor(s/60)+"m ago";
+  if(s<86400) return Math.floor(s/3600)+"h ago";
+  return Math.floor(s/86400)+"d ago";
+}
+function dur(a,b){const s=Math.max(0,(new Date(b)-new Date(a))/1000);
+  return s<60?Math.round(s)+"s":Math.floor(s/60)+"m"+Math.round(s%60)+"s";}
+
+const METRICS=[
+  ["scraped","Stargazers scraped"],["sent","Sent to API"],["skipped","Already existed"],["runs","Total runs"],
+  ["suppressed","Suppressed"],["noreply","No-reply dropped"],["invalid","Invalid dropped"],["sent","—"]
+];
+
+async function refresh(){
+  let d;
+  try{ d = await (await fetch("/api/status",{cache:"no-store"})).json(); }
+  catch(e){ $("foot").textContent="⚠ cannot reach server"; return; }
+  const t=d.totals||{}, q=d.queue||{}, s=d.settings||{};
+
+  $("hero-imported").textContent = fmt(t.imported);
+
+  // pills
+  const next = d.schedule ? `${d.schedule} ${d.timezone||""}` : "disabled";
+  const pills=[
+    [d.running?"busy":(s.paused?"paused":"on"), d.running?"Scraping now":(s.paused?"Paused":"Idle")],
+    ["", `⏰ daily ${next}`],
+    ["", `🔑 ${d.tokens} token${d.tokens===1?"":"s"}`],
+    ["", `🗂 ${q.total||0} repos queued`],
+  ];
+  $("pills").innerHTML = pills.map(([c,txt])=>
+    `<span class="pill"><span class="dot ${c}"></span>${txt}</span>`).join("");
+
+  // metric cards
+  $("metrics").innerHTML = [
+    ["scraped","Stargazers scraped"],["sent","Sent to API"],["skipped","Already existed"],["runs","Total runs"],
+  ].map(([k,lbl])=>`<div class="card metric"><div class="n">${fmt(t[k])}</div><div class="k">${lbl}</div></div>`).join("")
+   + [["suppressed","Suppressed"],["noreply","No-reply dropped"],["invalid","Invalid dropped"]]
+     .map(([k,lbl])=>`<div class="card metric"><div class="n">${fmt(t[k])}</div><div class="k">${lbl}</div></div>`).join("");
+
+  // queue
+  const pct = q.total ? Math.round((q.cursor/q.total)*100) : 0;
+  $("qbar").style.width = pct+"%";
+  $("q-pos").textContent = `${q.cursor||0} / ${q.total||0} (${pct}%)`;
+  $("q-next").textContent = q.next ? `${q.next.Owner}/${q.next.Repo}` : "—";
+  $("q-cycles").textContent = q.cycles||0;
+  $("q-last").textContent = rel(t.lastRunAt);
+  $("q-list").textContent = d.listId || "—";
+
+  // settings (don't clobber while editing)
+  if(!editing){
+    $("paused").checked = !!s.paused;
+    $("reposPerRun").value = s.reposPerRun;
+    $("maxStars").value = s.maxStars;
+    $("delayMs").value = s.delayMs;
+    $("concurrency").value = s.concurrency;
+  }
+  $("scrapeNow").disabled = d.running;
+  $("scrapeRepo").disabled = d.running;
+
+  $("foot").textContent = `source="${d.source}" · API ${d.emailApi} · refreshed ${new Date().toLocaleTimeString()}`;
+  renderHistory();
+}
+
+async function renderHistory(){
+  let h; try{ h = await (await fetch("/api/history",{cache:"no-store"})).json(); }catch(e){ return; }
+  if(!h || !h.length) return;
+  $("history").innerHTML = h.map(r=>{
+    const repos=(r.repos||[]);
+    const sum=k=>repos.reduce((a,x)=>a+((x.push&&x.push[k])||0),0);
+    const scr=repos.reduce((a,x)=>a+(x.scraped||0),0);
+    const names=repos.map(x=>x.repo).join(", ")||"—";
+    const errs=repos.filter(x=>x.error).map(x=>x.error).concat(r.error?[r.error]:[]);
+    return `<tr>
+      <td title="${r.startedAt}">${rel(r.startedAt)}</td>
+      <td><span class="tag">${r.trigger}</span></td>
+      <td class="mono" title="${names}">${names.length>28?names.slice(0,28)+"…":names}</td>
+      <td>${fmt(scr)}</td><td>${fmt(sum("imported"))}</td><td>${fmt(sum("skipped"))}</td>
+      <td>${fmt(sum("suppressed"))}</td><td>${fmt(sum("noreply"))}</td><td>${fmt(sum("invalid"))}</td>
+      <td>${dur(r.startedAt,r.finishedAt)}${errs.length?` <span class="err" title="${errs.join(' | ').replace(/"/g,'')}">⚠</span>`:""}</td>
+    </tr>`;
+  }).join("");
+}
+
+$("save").onclick = async ()=>{
+  const body={
+    paused:$("paused").checked,
+    reposPerRun:+$("reposPerRun").value, maxStars:+$("maxStars").value,
+    delayMs:+$("delayMs").value, concurrency:+$("concurrency").value,
+  };
+  await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  editing=false; toast("Settings saved"); refresh();
+};
+$("paused").onchange = async ()=>{
+  await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({paused:$("paused").checked})});
+  toast($("paused").checked?"Scraping paused":"Scraping resumed");
+};
+$("scrapeNow").onclick = async ()=>{
+  const r=await fetch("/api/scrape",{method:"POST"});
+  toast(r.ok?"Run started":"Already running"); setTimeout(refresh,600);
+};
+$("scrapeRepo").onclick = async ()=>{
+  const repo=$("adhoc").value.trim(); if(!repo){toast("Enter owner/repo");return;}
+  const r=await fetch("/api/scrape",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({repo})});
+  const j=await r.json().catch(()=>({}));
+  toast(r.ok?`Scraping ${repo}`:(j.error||"Error")); setTimeout(refresh,600);
+};
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

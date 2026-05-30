@@ -43,11 +43,13 @@ type Config struct {
 	RunOnStart bool
 
 	// Storage (mounted volume)
-	DataDir   string
-	ReposPath string
-	StatePath string
-	CachePath string
-	OutputDir string
+	DataDir      string
+	ReposPath    string
+	StatePath    string
+	CachePath    string
+	OutputDir    string
+	SettingsPath string
+	StatsPath    string
 }
 
 // FromEnv builds a Config from environment variables, applying defaults.
@@ -85,6 +87,8 @@ func FromEnv() (Config, error) {
 	c.StatePath = getenv("STATE_FILE", filepath.Join(c.DataDir, "state.json"))
 	c.CachePath = getenv("CACHE_FILE", filepath.Join(c.DataDir, "user_cache.json"))
 	c.OutputDir = getenv("OUTPUT_DIR", filepath.Join(c.DataDir, "out"))
+	c.SettingsPath = getenv("SETTINGS_FILE", filepath.Join(c.DataDir, "settings.json"))
+	c.StatsPath = getenv("STATS_FILE", filepath.Join(c.DataDir, "stats.json"))
 
 	if c.EmailAPISecret == "" {
 		return c, fmt.Errorf("EMAIL_API_SECRET is required")
@@ -123,4 +127,19 @@ func getbool(key string, def bool) bool {
 		}
 	}
 	return def
+}
+
+// InitialSettings derives the default runtime Settings from the env config.
+// These are used the first time the service boots; thereafter the persisted
+// settings.json (editable from the dashboard) takes over.
+func (c Config) InitialSettings() Settings {
+	return Settings{
+		Paused:       false,
+		ReposPerRun:  c.ReposPerRun,
+		MaxStars:     c.MaxStars,
+		DelayMs:      int(c.Delay / time.Millisecond),
+		Concurrency:  c.Concurrency,
+		MaxRepos:     c.MaxRepos,
+		MaxForkRepos: c.MaxForkRepos,
+	}
 }

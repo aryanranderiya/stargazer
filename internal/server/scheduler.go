@@ -27,7 +27,8 @@ func nextRun(from time.Time, hour, minute int) time.Time {
 }
 
 // StartScheduler launches a goroutine that invokes a scrape run once per day at
-// cfg.ScrapeAt, until ctx is cancelled. An empty ScrapeAt disables scheduling.
+// cfg.ScrapeAt, until ctx is cancelled. Runs are skipped while paused (a
+// dashboard toggle). An empty ScrapeAt disables scheduling entirely.
 func StartScheduler(ctx context.Context, cfg Config, runner *Runner) error {
 	if strings.TrimSpace(cfg.ScrapeAt) == "" {
 		log.Printf("scheduler: SCRAPE_AT empty — daily scheduling disabled")
@@ -38,6 +39,10 @@ func StartScheduler(ctx context.Context, cfg Config, runner *Runner) error {
 		return fmt.Errorf("invalid SCRAPE_AT %q (want HH:MM): %w", cfg.ScrapeAt, err)
 	}
 	go runSchedulerLoop(ctx, hour, minute, func() {
+		if runner.settings.Get().Paused {
+			log.Printf("scheduler: scheduled run skipped (paused)")
+			return
+		}
 		if _, err := runner.Run("schedule", nil); err != nil {
 			log.Printf("scheduled run error: %v", err)
 		}

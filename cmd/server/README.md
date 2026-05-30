@@ -30,16 +30,28 @@ for the full list (GitHub tokens, scrape tuning, schedule, etc.).
 Tokens come from `STARGAZER_GITHUB_TOKENS` (comma-separated); if unset, the
 service falls back to `~/.config/stargazer/credentials.json` (the TUI's store).
 
+## Dashboard
+
+`GET /` serves a self-contained, Apple-style dashboard (no build step, embedded
+via `go:embed`) showing cumulative emails ingested, per-metric totals, live
+queue progress, a run history table, and **pace controls** — pause/resume and
+live-editable repos-per-day, max-stars, delay, and concurrency (persisted to
+`settings.json`, applied on the next run).
+
 ## Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
+| `GET` | `/` | the dashboard UI |
 | `GET` | `/health` | liveness probe |
-| `GET` | `/status` | running state, queue position, last-run report, config summary |
-| `GET` | `/queue` | queue snapshot (size, cursor, next repo, parse warnings) |
-| `POST` | `/scrape` | trigger a run now. Empty body = next from queue; `{"repo":"owner/repo"}` or `{"repos":[...]}` = those repos (cursor untouched) |
+| `GET` | `/api/status` | running state, queue position, settings, cumulative totals, last run |
+| `GET` | `/api/history` | recent run reports (newest first) |
+| `GET`/`POST` | `/api/settings` | read / partially update runtime settings (pause, pace) |
+| `GET` | `/api/queue` | queue snapshot (size, cursor, next repo, parse warnings) |
+| `POST` | `/api/scrape` | trigger a run now. Empty body = next from queue; `{"repo":"owner/repo"}` or `{"repos":[...]}` = those repos (cursor untouched) |
 
 Runs are serialised: a second trigger while one is in flight returns `409`.
+While paused, the daily scheduler skips runs (manual `/api/scrape` still works).
 
 ## Email mapping & deliverability
 

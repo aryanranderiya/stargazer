@@ -13,11 +13,15 @@ import (
 	"stargazer/internal/scraper"
 )
 
-// Runner executes scrape+push runs, serialised so only one runs at a time.
+// Runner executes scrape+push runs, serialised so only one runs at a time. The
+// tunable parameters come from the SettingsStore (live-editable), and finished
+// runs are folded into the StatsStore.
 type Runner struct {
-	cfg   Config
-	queue *repoqueue.Queue
-	push  *pusher.Client
+	cfg      Config
+	queue    *repoqueue.Queue
+	push     *pusher.Client
+	settings *SettingsStore
+	stats    *StatsStore
 
 	mu      sync.Mutex
 	running bool
@@ -43,8 +47,8 @@ type RunReport struct {
 }
 
 // NewRunner constructs a Runner.
-func NewRunner(cfg Config, q *repoqueue.Queue, p *pusher.Client) *Runner {
-	return &Runner{cfg: cfg, queue: q, push: p}
+func NewRunner(cfg Config, q *repoqueue.Queue, p *pusher.Client, settings *SettingsStore, stats *StatsStore) *Runner {
+	return &Runner{cfg: cfg, queue: q, push: p, settings: settings, stats: stats}
 }
 
 // Run scrapes and pushes a set of repos. With an empty override it pops the
@@ -67,15 +71,17 @@ func (r *Runner) Run(trigger string, override []scraper.RepoTarget) (*RunReport,
 		r.mu.Unlock()
 	}()
 
+	set := r.settings.Get()
 	report := &RunReport{StartedAt: time.Now(), Trigger: trigger}
 
 	targets := override
 	if len(targets) == 0 {
-		next, err := r.queue.Next(r.cfg.ReposPerRun)
+		next, err := r.queue.Next(set.ReposPerRun)
 		if err != nil {
 			report.Error = err.Error()
 			report.FinishedAt = time.Now()
 			r.store(report)
+			r.stats.Record(report)
 			return report, err
 		}
 		targets = next
@@ -87,16 +93,17 @@ func (r *Runner) Run(trigger string, override []scraper.RepoTarget) (*RunReport,
 	defer os.RemoveAll(runDir) // CSVs already pushed; keep the volume tidy
 
 	for _, t := range targets {
-		report.Repos = append(report.Repos, r.scrapeAndPush(runDir, t))
+		report.Repos = append(report.Repos, r.scrapeAndPush(runDir, t, set))
 	}
 
 	report.FinishedAt = time.Now()
 	r.store(report)
+	r.stats.Record(report)
 	log.Printf("run done (trigger=%s, repos=%d, took=%s)", trigger, len(report.Repos), report.FinishedAt.Sub(report.StartedAt).Truncate(time.Second))
 	return report, nil
 }
 
-func (r *Runner) scrapeAndPush(runDir string, t scraper.RepoTarget) RepoReport {
+func (r *Runner) scrapeAndPush(runDir string, t scraper.RepoTarget, set Settings) RepoReport {
 	name := t.Owner + "/" + t.Repo
 	rep := RepoReport{Repo: name}
 
@@ -104,11 +111,11 @@ func (r *Runner) scrapeAndPush(runDir string, t scraper.RepoTarget) RepoReport {
 		Repos:        []scraper.RepoTarget{t},
 		Tokens:       r.cfg.Tokens,
 		OutputDir:    runDir,
-		Concurrency:  r.cfg.Concurrency,
-		MaxRepos:     r.cfg.MaxRepos,
-		MaxForkRepos: r.cfg.MaxForkRepos,
-		MaxStars:     r.cfg.MaxStars,
-		Delay:        r.cfg.Delay,
+		Concurrency:  set.Concurrency,
+		MaxRepos:     set.MaxRepos,
+		MaxForkRepos: set.MaxForkRepos,
+		MaxStars:     set.MaxStars,
+		Delay:        time.Duration(set.DelayMs) * time.Millisecond,
 		UseSearchAPI: r.cfg.UseSearchAPI,
 		CachePath:    r.cfg.CachePath,
 	}
