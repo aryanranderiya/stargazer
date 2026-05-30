@@ -116,6 +116,8 @@
   .stat.scraped{background:var(--green-bg);color:var(--green)} .stat.noreply{background:var(--orange-bg);color:var(--orange)}
   .stat.none{background:var(--gray-bg);color:var(--muted)} .stat.failed{background:var(--red-bg);color:var(--red)}
 
+  .tbl{max-height:480px;overflow:auto;border-radius:12px}
+  .tbl thead th{position:sticky;top:0;background:var(--surface);z-index:1}
   table{width:100%;border-collapse:collapse;font-size:13px}
   th{text-align:right;color:var(--faint);font-weight:500;padding:9px 10px;white-space:nowrap} th:first-child,td:first-child{text-align:left}
   td{padding:10px;white-space:nowrap} tbody tr:hover{background:var(--surface-2)}
@@ -195,11 +197,13 @@
 
   <section>
     <div class="h"><h2>Recent batches</h2></div>
-    <div class="card pad" style="overflow-x:auto">
+    <div class="card pad">
+      <div class="tbl">
       <table>
         <thead><tr><th>When</th><th>Repos</th><th>Scraped</th><th>Imported</th><th>Existing</th><th>Suppressed</th><th>No-reply</th><th>Took</th></tr></thead>
         <tbody id="history"><tr><td colspan="8" class="empty">No batches yet</td></tr></tbody>
       </table>
+      </div>
     </div>
   </section>
   </div><!-- /view-overview -->
@@ -213,7 +217,7 @@
           <label>Status <select id="c-status"><option value="">all</option><option value="scraped">real email</option><option value="noreply">no-reply</option><option value="none">no email</option><option value="failed">failed</option></select></label>
           <div class="cchips" id="c-chips"></div>
         </div>
-        <div style="overflow-x:auto">
+        <div class="tbl">
           <table>
             <thead><tr><th>User</th><th>Email</th><th>Source</th><th>Repo</th><th>Outcome</th><th>When</th></tr></thead>
             <tbody id="c-rows"><tr><td colspan="6" class="empty">No contacts scraped yet — turn on scraping and they'll stream in here.</td></tr></tbody>
