@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -150,4 +151,86 @@ func (q *Queue) Snapshot() Snapshot {
 		Next:     next,
 		Warnings: append([]string(nil), q.warnings...),
 	}
+}
+
+// AllTargets returns a copy of the queued repos in order.
+func (q *Queue) AllTargets() []scraper.RepoTarget {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	out := make([]scraper.RepoTarget, len(q.targets))
+	copy(out, q.targets)
+	return out
+}
+
+// Add appends new (deduped) repos to the queue file and reloads. Returns the
+// number actually added.
+func (q *Queue) Add(refs []scraper.RepoTarget) (int, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	existing := make(map[string]bool, len(q.targets))
+	for _, t := range q.targets {
+		existing[t.Owner+"/"+t.Repo] = true
+	}
+	var toAppend []string
+	for _, r := range refs {
+		k := r.Owner + "/" + r.Repo
+		if r.Owner == "" || r.Repo == "" || existing[k] {
+			continue
+		}
+		existing[k] = true
+		toAppend = append(toAppend, k)
+	}
+	if len(toAppend) == 0 {
+		return 0, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(q.reposPath), 0o755); err != nil {
+		return 0, err
+	}
+	f, err := os.OpenFile(q.reposPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return 0, err
+	}
+	for _, l := range toAppend {
+		fmt.Fprintln(f, l)
+	}
+	_ = f.Close()
+	if err := q.reload(); err != nil {
+		return len(toAppend), err
+	}
+	return len(toAppend), nil
+}
+
+// Remove drops a repo from the queue (rewriting the file) and reloads.
+func (q *Queue) Remove(owner, repo string) (bool, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	target := owner + "/" + repo
+	kept := make([]string, 0, len(q.targets))
+	found := false
+	for _, t := range q.targets {
+		k := t.Owner + "/" + t.Repo
+		if k == target {
+			found = true
+			continue
+		}
+		kept = append(kept, k)
+	}
+	if !found {
+		return false, nil
+	}
+	content := ""
+	if len(kept) > 0 {
+		content = strings.Join(kept, "\n") + "\n"
+	}
+	if err := os.WriteFile(q.reposPath, []byte(content), 0o644); err != nil {
+		return false, err
+	}
+	if err := q.reload(); err != nil {
+		return true, err
+	}
+	if q.state.Cursor >= len(q.targets) {
+		q.state.Cursor = 0
+		_ = q.persist()
+	}
+	return true, nil
 }

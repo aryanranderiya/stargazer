@@ -28,7 +28,8 @@ type Config struct {
 	Concurrency  int
 	MaxRepos     int // max own (non-fork) repos to scan per user
 	MaxForkRepos int // max forked repos to scan per user
-	MaxStars     int // 0 = fetch all
+	MaxStars     int // max stargazers to scrape this run (0 = all from the offset onward)
+	StartOffset  int // stargazers to skip before scraping (deep-walk resume point)
 	Delay        time.Duration
 	UseSearchAPI bool   // use the GitHub commit search API as a last resort
 	CachePath    string // path for on-disk user profile cache; defaults to $XDG_CONFIG/stargazer/user_cache.json
@@ -195,7 +196,8 @@ func runRepo(client *gh.Client, cfg Config, repo RepoTarget, outputPath string, 
 	var csvMu sync.Mutex
 
 	fetchErrCh := make(chan error, 1)
-	starCh := client.StreamStargazers(repo.Owner, repo.Repo, cfg.MaxStars, cfg.Concurrency, func(fetched int) {
+	startPage := cfg.StartOffset/100 + 1
+	starCh := client.StreamStargazers(repo.Owner, repo.Repo, cfg.MaxStars, cfg.Concurrency, startPage, func(fetched int) {
 		send(progressCh, Progress{
 			Stage:     "fetching",
 			Status:    fmt.Sprintf("[%s] Fetched %d stargazers...", repoName, fetched),

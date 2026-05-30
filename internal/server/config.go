@@ -47,9 +47,10 @@ type Config struct {
 	ReposPath    string
 	StatePath    string
 	CachePath    string
-	OutputDir    string
-	SettingsPath string
-	StatsPath    string
+	OutputDir     string
+	SettingsPath  string
+	StatsPath     string
+	RepoStatsPath string
 }
 
 // FromEnv builds a Config from environment variables, applying defaults.
@@ -89,6 +90,7 @@ func FromEnv() (Config, error) {
 	c.OutputDir = getenv("OUTPUT_DIR", filepath.Join(c.DataDir, "out"))
 	c.SettingsPath = getenv("SETTINGS_FILE", filepath.Join(c.DataDir, "settings.json"))
 	c.StatsPath = getenv("STATS_FILE", filepath.Join(c.DataDir, "stats.json"))
+	c.RepoStatsPath = getenv("REPOSTATS_FILE", filepath.Join(c.DataDir, "repostats.json"))
 
 	if c.EmailAPISecret == "" {
 		return c, fmt.Errorf("EMAIL_API_SECRET is required")

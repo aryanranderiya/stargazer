@@ -56,8 +56,9 @@ func main() {
 
 	settings := server.NewSettingsStore(cfg.SettingsPath, cfg.InitialSettings())
 	stats := server.NewStatsStore(cfg.StatsPath, 50)
-	runner := server.NewRunner(cfg, queue, push, settings, stats)
-	srv := server.New(cfg, queue, runner, settings, stats)
+	repoStore := server.NewRepoStore(cfg.RepoStatsPath)
+	runner := server.NewRunner(cfg, queue, push, settings, stats, repoStore)
+	srv := server.New(cfg, queue, runner, settings, stats, repoStore)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -65,6 +66,10 @@ func main() {
 	if err := server.StartScheduler(ctx, cfg, runner); err != nil {
 		log.Fatalf("scheduler: %v", err)
 	}
+
+	// Populate total star counts for already-queued repos so the dashboard
+	// shows their progress bars without waiting for the first scrape.
+	go runner.RefreshTotals(queue.AllTargets())
 
 	if cfg.RunOnStart {
 		go func() {

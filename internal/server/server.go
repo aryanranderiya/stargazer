@@ -17,20 +17,20 @@ import (
 //go:embed web/index.html
 var dashboardHTML []byte
 
-// Server exposes the dashboard and JSON API over the runner, queue, settings
-// and stats.
+// Server exposes the dashboard and JSON API.
 type Server struct {
 	cfg      Config
 	queue    *repoqueue.Queue
 	runner   *Runner
 	settings *SettingsStore
 	stats    *StatsStore
+	repos    *RepoStore
 	http     *http.Server
 }
 
 // New builds the HTTP server and routes.
-func New(cfg Config, q *repoqueue.Queue, runner *Runner, settings *SettingsStore, stats *StatsStore) *Server {
-	s := &Server{cfg: cfg, queue: q, runner: runner, settings: settings, stats: stats}
+func New(cfg Config, q *repoqueue.Queue, runner *Runner, settings *SettingsStore, stats *StatsStore, repoStore *RepoStore) *Server {
+	s := &Server{cfg: cfg, queue: q, runner: runner, settings: settings, stats: stats, repos: repoStore}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/health", s.handleHealth)
@@ -66,6 +66,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "time": time.Now().UTC()})
 }
 
+func (s *Server) queueOrder() []string {
+	targets := s.queue.AllTargets()
+	order := make([]string, len(targets))
+	for i, t := range targets {
+		order[i] = t.Owner + "/" + t.Repo
+	}
+	return order
+}
+
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	totals, history := s.stats.Snapshot()
 	var lastRun *RunReport
@@ -77,6 +86,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"running":   s.runner.Running(),
 		"queue":     s.queue.Snapshot(),
+		"repos":     s.repos.Snapshot(s.queueOrder()),
 		"settings":  s.settings.Get(),
 		"totals":    totals,
 		"lastRun":   lastRun,
@@ -95,8 +105,53 @@ func (s *Server) handleHistory(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, history)
 }
 
-func (s *Server) handleQueue(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.queue.Snapshot())
+// handleQueue: GET snapshot+progress, POST to add repos, DELETE to remove one.
+func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{
+			"queue": s.queue.Snapshot(),
+			"repos": s.repos.Snapshot(s.queueOrder()),
+		})
+	case http.MethodPost:
+		var body struct {
+			Repos []string `json:"repos"`
+			Text  string   `json:"text"`
+			Repo  string   `json:"repo"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		raw := strings.Join(body.Repos, "\n") + "\n" + body.Text + "\n" + body.Repo
+		targets, warnings := repos.ParseList(raw)
+		if len(targets) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "no valid owner/repo entries", "warnings": warnings})
+			return
+		}
+		added, err := s.queue.Add(targets)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		go s.runner.RefreshTotals(targets) // populate star totals for the dashboard
+		writeJSON(w, http.StatusOK, map[string]any{"added": added, "warnings": warnings, "queue": s.queue.Snapshot()})
+	case http.MethodDelete:
+		var body struct {
+			Repo string `json:"repo"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		owner, repo, _ := strings.Cut(strings.TrimSpace(body.Repo), "/")
+		if owner == "" || repo == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "repo must be owner/repo"})
+			return
+		}
+		removed, err := s.queue.Remove(owner, repo)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"removed": removed, "queue": s.queue.Snapshot()})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "GET, POST or DELETE"})
+	}
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
@@ -128,7 +183,7 @@ func (s *Server) handleScrape(w http.ResponseWriter, r *http.Request) {
 		Repos []string `json:"repos"`
 	}
 	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&body) // empty/invalid body => use queue
+		_ = json.NewDecoder(r.Body).Decode(&body)
 	}
 
 	parts := append([]string{}, body.Repos...)

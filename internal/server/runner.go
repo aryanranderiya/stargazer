@@ -8,20 +8,23 @@ import (
 	"sync"
 	"time"
 
+	gh "stargazer/internal/github"
 	"stargazer/internal/pusher"
 	"stargazer/internal/repoqueue"
 	"stargazer/internal/scraper"
 )
 
 // Runner executes scrape+push runs, serialised so only one runs at a time. The
-// tunable parameters come from the SettingsStore (live-editable), and finished
-// runs are folded into the StatsStore.
+// tunable parameters come from the SettingsStore (live-editable); finished runs
+// are folded into the StatsStore and per-repo RepoStore.
 type Runner struct {
 	cfg      Config
 	queue    *repoqueue.Queue
 	push     *pusher.Client
 	settings *SettingsStore
 	stats    *StatsStore
+	repos    *RepoStore
+	gh       *gh.Client
 
 	mu      sync.Mutex
 	running bool
@@ -47,8 +50,16 @@ type RunReport struct {
 }
 
 // NewRunner constructs a Runner.
-func NewRunner(cfg Config, q *repoqueue.Queue, p *pusher.Client, settings *SettingsStore, stats *StatsStore) *Runner {
-	return &Runner{cfg: cfg, queue: q, push: p, settings: settings, stats: stats}
+func NewRunner(cfg Config, q *repoqueue.Queue, p *pusher.Client, settings *SettingsStore, stats *StatsStore, repos *RepoStore) *Runner {
+	return &Runner{
+		cfg:      cfg,
+		queue:    q,
+		push:     p,
+		settings: settings,
+		stats:    stats,
+		repos:    repos,
+		gh:       gh.NewClient(cfg.Tokens, 100*time.Millisecond),
+	}
 }
 
 // Run scrapes and pushes a set of repos. With an empty override it pops the
@@ -107,6 +118,15 @@ func (r *Runner) scrapeAndPush(runDir string, t scraper.RepoTarget, set Settings
 	name := t.Owner + "/" + t.Repo
 	rep := RepoReport{Repo: name}
 
+	// Ensure we know the repo's total stars (for the dashboard progress bar).
+	if r.repos.NeedsTotal(name) {
+		if total, err := r.gh.GetRepoStarCount(t.Owner, t.Repo); err == nil {
+			r.repos.SetTotal(name, total)
+		}
+	}
+	// Resume deeper into the repo each run instead of re-scraping the top.
+	offset := r.repos.Offset(name)
+
 	cfg := scraper.Config{
 		Repos:        []scraper.RepoTarget{t},
 		Tokens:       r.cfg.Tokens,
@@ -115,6 +135,7 @@ func (r *Runner) scrapeAndPush(runDir string, t scraper.RepoTarget, set Settings
 		MaxRepos:     set.MaxRepos,
 		MaxForkRepos: set.MaxForkRepos,
 		MaxStars:     set.MaxStars,
+		StartOffset:  offset,
 		Delay:        time.Duration(set.DelayMs) * time.Millisecond,
 		UseSearchAPI: r.cfg.UseSearchAPI,
 		CachePath:    r.cfg.CachePath,
@@ -156,8 +177,10 @@ func (r *Runner) scrapeAndPush(runDir string, t scraper.RepoTarget, set Settings
 		rep.Error += "push: " + perr.Error()
 	}
 
-	log.Printf("repo %s: scraped=%d sent=%d imported=%d skipped=%d suppressed=%d noreply=%d invalid=%d%s",
-		name, count, stats.Sent, stats.Imported, stats.Skipped, stats.Suppressed, stats.Noreply, stats.Invalid,
+	r.repos.RecordRun(name, count, stats.Imported, rep.Error, time.Now())
+
+	log.Printf("repo %s: offset=%d scraped=%d sent=%d imported=%d skipped=%d suppressed=%d noreply=%d invalid=%d%s",
+		name, offset, count, stats.Sent, stats.Imported, stats.Skipped, stats.Suppressed, stats.Noreply, stats.Invalid,
 		errSuffix(rep.Error))
 	return rep
 }
@@ -180,6 +203,20 @@ func (r *Runner) Last() *RunReport {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.last
+}
+
+// RefreshTotals fetches and caches the total star count for any of the given
+// repos whose total is still unknown — used to populate the dashboard progress
+// bars immediately when repos are added to the queue.
+func (r *Runner) RefreshTotals(targets []scraper.RepoTarget) {
+	for _, t := range targets {
+		name := t.Owner + "/" + t.Repo
+		if r.repos.NeedsTotal(name) {
+			if total, err := r.gh.GetRepoStarCount(t.Owner, t.Repo); err == nil {
+				r.repos.SetTotal(name, total)
+			}
+		}
+	}
 }
 
 // Running reports whether a run is currently in progress.

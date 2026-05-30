@@ -371,7 +371,22 @@ func (c *Client) GetAllStargazers(owner, repo string, maxCount int, onPage func(
 // them to the returned channel. The channel is closed when all pages are fetched.
 // onPage is called with the cumulative count so far (may be approximate due to concurrency).
 // errCh receives at most one error; nil if everything succeeded.
-func (c *Client) StreamStargazers(owner, repo string, maxCount int, concurrency int, onPage func(int), errCh chan<- error) <-chan StarEntry {
+// GetRepoStarCount returns the repository's total stargazer count, used to show
+// per-repo progress in the dashboard.
+func (c *Client) GetRepoStarCount(owner, repo string) (int, error) {
+	url := fmt.Sprintf("%s/repos/%s/%s", apiBase, owner, repo)
+	var r struct {
+		StargazersCount int `json:"stargazers_count"`
+	}
+	if err := c.get(url, "", &r); err != nil {
+		return 0, err
+	}
+	return r.StargazersCount, nil
+}
+
+// StreamStargazers streams up to maxCount stargazers starting at startPage
+// (1-based, 100 per page) so callers can resume deeper into a repo across runs.
+func (c *Client) StreamStargazers(owner, repo string, maxCount int, concurrency int, startPage int, onPage func(int), errCh chan<- error) <-chan StarEntry {
 	out := make(chan StarEntry, 200)
 
 	if concurrency < 1 {
@@ -403,7 +418,10 @@ func (c *Client) StreamStargazers(owner, repo string, maxCount int, concurrency 
 
 		// Use a semaphore to limit concurrent fetches.
 		sem := make(chan struct{}, concurrency)
-		page := 1
+		if startPage < 1 {
+			startPage = 1
+		}
+		page := startPage
 
 		for {
 			if isStopped() {

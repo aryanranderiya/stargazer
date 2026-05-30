@@ -6,281 +6,347 @@
 <title>Stargazer</title>
 <style>
   :root{
-    --bg:#f5f5f7; --card:#ffffff; --text:#1d1d1f; --muted:#6e6e73;
-    --line:#e3e3e6; --accent:#0071e3; --accent-press:#0058b0;
-    --green:#34c759; --orange:#ff9f0a; --red:#ff3b30; --gray:#8e8e93;
-    --shadow:0 1px 3px rgba(0,0,0,.06),0 8px 28px rgba(0,0,0,.06);
-    --radius:20px;
+    --bg:#f5f5f7; --surface:#fff; --surface-2:#fbfbfd; --text:#1d1d1f; --muted:#6e6e73; --faint:#86868b;
+    --line:#e6e6ea; --accent:#0071e3; --accent-press:#0058b0;
+    --green:#2fb457; --green-bg:#e9f9ee; --blue:#0071e3; --blue-bg:#eaf3ff; --orange:#ff9f0a; --red:#ff3b30;
+    --shadow:0 1px 2px rgba(0,0,0,.04), 0 6px 24px rgba(0,0,0,.05);
+    --r:18px; --r-sm:12px;
   }
   @media (prefers-color-scheme: dark){
     :root{
-      --bg:#000000; --card:#1c1c1e; --text:#f5f5f7; --muted:#98989d;
-      --line:#2c2c2e; --accent:#0a84ff; --accent-press:#0070e0; --shadow:0 1px 3px rgba(0,0,0,.5);
+      --bg:#000; --surface:#1c1c1e; --surface-2:#161618; --text:#f5f5f7; --muted:#98989d; --faint:#6e6e73;
+      --line:#2c2c2e; --accent:#0a84ff; --accent-press:#0070e0; --green:#32d35c; --green-bg:#10301a;
+      --blue:#0a84ff; --blue-bg:#0f2236; --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 30px rgba(0,0,0,.5);
     }
   }
   *{box-sizing:border-box}
-  html,body{margin:0;padding:0}
+  html,body{margin:0}
   body{
-    background:var(--bg); color:var(--text);
+    background:var(--bg); color:var(--text); line-height:1.45;
     font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Segoe UI",system-ui,sans-serif;
-    -webkit-font-smoothing:antialiased; line-height:1.45;
-    padding:40px 20px 80px;
+    -webkit-font-smoothing:antialiased;
   }
-  .wrap{max-width:1080px;margin:0 auto}
-  header{display:flex;align-items:center;gap:14px;margin-bottom:8px}
-  .logo{width:30px;height:30px;display:grid;place-items:center;font-size:24px;filter:saturate(1.1)}
-  h1{font-size:26px;font-weight:650;letter-spacing:-.02em;margin:0}
-  .sub{color:var(--muted);font-size:14px;margin:0 0 26px 44px;letter-spacing:-.01em}
-  .pills{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:26px}
-  .pill{display:inline-flex;align-items:center;gap:7px;background:var(--card);border:1px solid var(--line);
-        border-radius:980px;padding:7px 14px;font-size:13px;font-weight:500;box-shadow:var(--shadow)}
-  .dot{width:8px;height:8px;border-radius:50%;background:var(--gray);flex:none}
-  .dot.on{background:var(--green);box-shadow:0 0 0 4px rgba(52,199,89,.16)}
-  .dot.busy{background:var(--accent);box-shadow:0 0 0 4px rgba(10,132,255,.18);animation:pulse 1.2s infinite}
-  .dot.paused{background:var(--orange);box-shadow:0 0 0 4px rgba(255,159,10,.18)}
-  @keyframes pulse{50%{opacity:.4}}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:24px}
-  .grid{display:grid;gap:16px}
-  .hero{display:flex;flex-direction:column;gap:2px;margin-bottom:16px}
-  .hero .big{font-size:64px;font-weight:680;letter-spacing:-.03em;line-height:1}
-  .hero .lbl{color:var(--muted);font-size:15px;letter-spacing:-.01em}
-  .metrics{grid-template-columns:repeat(4,1fr);margin-bottom:16px}
-  @media(max-width:820px){.metrics{grid-template-columns:repeat(2,1fr)}}
-  .metric .n{font-size:28px;font-weight:620;letter-spacing:-.02em}
-  .metric .k{color:var(--muted);font-size:13px;margin-top:2px}
-  .cols{grid-template-columns:1fr 1fr}
-  @media(max-width:820px){.cols{grid-template-columns:1fr}}
-  h2{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:0 0 16px}
-  .row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--line);font-size:14px}
-  .row:last-child{border-bottom:0}
-  .row .k{color:var(--muted)} .row .v{font-weight:550;font-variant-numeric:tabular-nums}
-  .progress{height:8px;border-radius:6px;background:var(--line);overflow:hidden;margin:6px 0 14px}
-  .progress > i{display:block;height:100%;background:var(--accent);border-radius:6px;transition:width .5s ease}
-  .field{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
-  .field label{font-size:14px;color:var(--muted)}
-  input[type=number],input[type=text]{
-    font:inherit;font-size:14px;background:var(--bg);color:var(--text);border:1px solid var(--line);
-    border-radius:10px;padding:8px 11px;width:130px;text-align:right;outline:none}
-  input[type=text]{text-align:left;width:200px}
-  input:focus{border-color:var(--accent)}
-  .btn{font:inherit;font-size:14px;font-weight:550;border:0;border-radius:12px;padding:10px 18px;cursor:pointer;
-       background:var(--accent);color:#fff;transition:.15s;letter-spacing:-.01em}
-  .btn:hover{background:var(--accent-press)} .btn:active{transform:scale(.98)}
-  .btn.sec{background:var(--bg);color:var(--text);border:1px solid var(--line)}
-  .btn.warn{background:var(--orange)} .btn.warn:hover{filter:brightness(.95)}
-  .btn[disabled]{opacity:.5;cursor:not-allowed}
-  .btnrow{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
-  .switch{position:relative;width:50px;height:30px;flex:none}
+  .num{font-variant-numeric:tabular-nums}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  a{color:var(--accent);text-decoration:none}
+
+  /* header */
+  header{position:sticky;top:0;z-index:20;backdrop-filter:saturate(1.6) blur(18px);
+    background:color-mix(in srgb, var(--bg) 78%, transparent);border-bottom:1px solid var(--line)}
+  .bar{max-width:1120px;margin:0 auto;padding:13px 22px;display:flex;align-items:center;gap:12px}
+  .brand{font-size:18px;font-weight:650;letter-spacing:-.02em;display:flex;align-items:center;gap:9px}
+  .brand .star{color:var(--accent)}
+  .hstatus{margin-left:6px}
+  .spacer{flex:1}
+  .hmeta{display:flex;gap:18px;color:var(--muted);font-size:12.5px}
+  .hmeta b{color:var(--text);font-weight:600}
+  @media(max-width:680px){.hmeta{display:none}}
+
+  main{max-width:1120px;margin:0 auto;padding:26px 22px 90px}
+  section{margin-top:26px}
+  .h{display:flex;align-items:baseline;gap:10px;margin:0 0 13px 2px}
+  .h h2{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:0}
+  .h .hint{font-size:12.5px;color:var(--faint)}
+
+  .chip{display:inline-flex;align-items:center;gap:7px;border-radius:980px;padding:5px 12px;font-size:12.5px;font-weight:550;
+    background:var(--surface);border:1px solid var(--line)}
+  .dot{width:8px;height:8px;border-radius:50%;background:#9a9aa0;flex:none}
+  .dot.on{background:var(--green);box-shadow:0 0 0 4px color-mix(in srgb,var(--green) 22%,transparent)}
+  .dot.busy{background:var(--blue);box-shadow:0 0 0 4px color-mix(in srgb,var(--blue) 22%,transparent);animation:pulse 1.1s infinite}
+  .dot.paused{background:var(--orange);box-shadow:0 0 0 4px color-mix(in srgb,var(--orange) 22%,transparent)}
+  @keyframes pulse{50%{opacity:.35}}
+
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
+  .pad{padding:22px}
+
+  /* KPIs */
+  .kpis{display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;gap:14px}
+  @media(max-width:860px){.kpis{grid-template-columns:1fr 1fr}}
+  .kpi{padding:20px 22px}
+  .kpi .v{font-weight:680;letter-spacing:-.03em;line-height:1}
+  .kpi.hero .v{font-size:54px} .kpi .v{font-size:30px}
+  .kpi .k{color:var(--muted);font-size:13px;margin-top:8px}
+  .kpi.hero{background:linear-gradient(145deg,var(--surface),var(--surface-2))}
+  .kpi .sub{color:var(--faint);font-size:12px;margin-top:3px}
+
+  /* add to queue */
+  .add{display:flex;gap:12px;align-items:stretch}
+  @media(max-width:680px){.add{flex-direction:column}}
+  textarea{flex:1;resize:vertical;min-height:46px;font:inherit;font-size:14px;line-height:1.5;
+    background:var(--surface-2);color:var(--text);border:1px solid var(--line);border-radius:var(--r-sm);padding:11px 13px;outline:none}
+  textarea:focus{border-color:var(--accent)}
+  .add .side{display:flex;flex-direction:column;gap:8px;justify-content:flex-start;min-width:150px}
+
+  .btn{font:inherit;font-size:14px;font-weight:560;border:0;border-radius:var(--r-sm);padding:11px 18px;cursor:pointer;
+    background:var(--accent);color:#fff;transition:.15s;letter-spacing:-.01em;white-space:nowrap}
+  .btn:hover{background:var(--accent-press)} .btn:active{transform:scale(.985)} .btn[disabled]{opacity:.45;cursor:not-allowed}
+  .btn.sec{background:var(--surface-2);color:var(--text);border:1px solid var(--line)}
+  .btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--line);padding:7px 12px;font-size:13px}
+  .btn.tiny{padding:5px 10px;font-size:12.5px;border-radius:9px}
+  .btn.warn{background:var(--orange)}
+
+  /* repo rows */
+  .repos{display:flex;flex-direction:column;gap:10px}
+  .repo{display:grid;grid-template-columns:1fr;gap:10px;padding:16px 18px}
+  .repo .top{display:flex;align-items:center;gap:10px}
+  .repo .name{font-weight:600;font-size:15px;letter-spacing:-.01em}
+  .repo .badge{font-size:11px;font-weight:650;padding:2px 9px;border-radius:980px}
+  .badge.next{background:var(--blue-bg);color:var(--blue)}
+  .badge.done{background:var(--green-bg);color:var(--green)}
+  .badge.err{background:color-mix(in srgb,var(--red) 14%,transparent);color:var(--red)}
+  .repo .grow{flex:1}
+  .repo .acts{display:flex;gap:6px;opacity:.75}
+  .repo .meta{display:flex;gap:18px;color:var(--muted);font-size:12.5px;flex-wrap:wrap}
+  .repo .meta b{color:var(--text);font-weight:600}
+  .track{height:8px;border-radius:6px;background:var(--line);overflow:hidden}
+  .track > i{display:block;height:100%;border-radius:6px;background:var(--blue);transition:width .6s cubic-bezier(.4,0,.2,1)}
+  .track > i.done{background:var(--green)}
+  .track.idet{background:repeating-linear-gradient(90deg,var(--line) 0 12px,transparent 12px 24px);animation:shift 1s linear infinite}
+  @keyframes shift{to{background-position:24px 0}}
+  .empty{color:var(--faint);text-align:center;padding:26px;font-size:14px}
+
+  /* controls */
+  .ctrls{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
+  @media(max-width:680px){.ctrls{grid-template-columns:1fr 1fr}}
+  .field label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
+  .field input[type=number]{width:100%;font:inherit;font-size:14px;background:var(--surface-2);color:var(--text);
+    border:1px solid var(--line);border-radius:10px;padding:9px 11px;outline:none;text-align:right}
+  .field input:focus{border-color:var(--accent)}
+  .switchrow{display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .switch{position:relative;width:48px;height:29px;flex:none}
   .switch input{opacity:0;width:0;height:0}
   .slider{position:absolute;inset:0;background:var(--line);border-radius:980px;transition:.2s;cursor:pointer}
-  .slider::before{content:"";position:absolute;height:26px;width:26px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.3)}
+  .slider::before{content:"";position:absolute;height:25px;width:25px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.35)}
   .switch input:checked + .slider{background:var(--green)}
-  .switch input:checked + .slider::before{transform:translateX(20px)}
+  .switch input:checked + .slider::before{transform:translateX(19px)}
+
+  /* history */
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th{text-align:right;color:var(--muted);font-weight:500;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{text-align:right;color:var(--muted);font-weight:500;padding:9px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
   th:first-child,td:first-child{text-align:left}
-  td{padding:9px 10px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums;white-space:nowrap}
+  td{padding:10px;border-bottom:1px solid var(--line);white-space:nowrap}
   tr:last-child td{border-bottom:0}
-  .tag{font-size:11px;font-weight:600;padding:2px 8px;border-radius:980px;background:var(--bg);border:1px solid var(--line);color:var(--muted)}
+  .tag{font-size:11px;font-weight:600;padding:2px 8px;border-radius:980px;background:var(--surface-2);border:1px solid var(--line);color:var(--muted)}
   .err{color:var(--red)}
-  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
-  .mt{margin-top:16px}
+
   .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--text);color:var(--bg);
-         padding:12px 20px;border-radius:14px;font-size:14px;font-weight:500;opacity:0;transition:.25s;pointer-events:none;box-shadow:var(--shadow)}
+    padding:12px 20px;border-radius:13px;font-size:14px;font-weight:550;opacity:0;transition:.25s;pointer-events:none;box-shadow:var(--shadow);z-index:50}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
-  .foot{color:var(--muted);font-size:12px;text-align:center;margin-top:28px}
+  .foot{color:var(--faint);font-size:12px;text-align:center;margin-top:30px}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <div class="logo">✦</div>
-    <h1>Stargazer</h1>
-  </header>
-  <p class="sub">GitHub stargazer → email contact pipeline</p>
-
-  <div class="pills" id="pills"></div>
-
-  <div class="card">
-    <div class="hero">
-      <div class="big" id="hero-imported">—</div>
-      <div class="lbl">emails ingested into the email platform</div>
+<header>
+  <div class="bar">
+    <span class="brand"><span class="star">✦</span> Stargazer</span>
+    <span class="chip hstatus" id="hstatus"><span class="dot" id="hdot"></span><span id="hstate">—</span></span>
+    <span class="spacer"></span>
+    <div class="hmeta">
+      <span>Next run <b id="m-next">—</b></span>
+      <span>Queue <b id="m-queue">—</b></span>
+      <span>Tokens <b id="m-tokens">—</b></span>
     </div>
   </div>
+</header>
 
-  <div class="grid metrics mt" id="metrics"></div>
-
-  <div class="grid cols">
-    <div class="card">
-      <h2>Queue progress</h2>
-      <div class="progress"><i id="qbar" style="width:0%"></i></div>
-      <div class="row"><span class="k">Position</span><span class="v" id="q-pos">—</span></div>
-      <div class="row"><span class="k">Next repo</span><span class="v mono" id="q-next">—</span></div>
-      <div class="row"><span class="k">Full passes</span><span class="v" id="q-cycles">—</span></div>
-      <div class="row"><span class="k">Last run</span><span class="v" id="q-last">—</span></div>
-      <div class="row"><span class="k">Pushing to list</span><span class="v mono" id="q-list">—</span></div>
+<main>
+  <!-- KPIs -->
+  <section style="margin-top:8px">
+    <div class="kpis">
+      <div class="card kpi hero"><div class="v num" id="k-imported">—</div><div class="k">Emails ingested → Scraped audience</div><div class="sub" id="k-source">source = stargazer</div></div>
+      <div class="card kpi"><div class="v num" id="k-scraped">—</div><div class="k">Stargazers scraped</div></div>
+      <div class="card kpi"><div class="v num" id="k-repos">—</div><div class="k">Repos in queue</div></div>
+      <div class="card kpi"><div class="v num" id="k-runs">—</div><div class="k">Scrape runs</div></div>
     </div>
+  </section>
 
-    <div class="card">
-      <h2>Controls — slow it down or pause</h2>
-      <div class="field">
-        <label for="paused">Scraping</label>
+  <!-- Add to queue -->
+  <section>
+    <div class="h"><h2>Add repositories</h2><span class="hint">paste <span class="mono">owner/repo</span> or GitHub URLs — one per line or comma-separated</span></div>
+    <div class="card pad">
+      <div class="add">
+        <textarea id="addbox" rows="2" placeholder="facebook/react&#10;https://github.com/vercel/next.js&#10;langchain-ai/langchain, denoland/deno"></textarea>
+        <div class="side">
+          <button class="btn" id="addbtn">Add to queue</button>
+          <button class="btn sec" id="scrapeNext">Scrape next now</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Repos with per-repo progress -->
+  <section>
+    <div class="h"><h2>Repositories</h2><span class="hint" id="repos-hint"></span></div>
+    <div class="repos" id="repos"><div class="card empty">No repositories queued yet — add some above.</div></div>
+  </section>
+
+  <!-- Controls -->
+  <section>
+    <div class="h"><h2>Pace &amp; schedule</h2><span class="hint">slow it down, pause, or change cadence — applies to the next run</span></div>
+    <div class="card pad">
+      <div class="switchrow" style="margin-bottom:18px">
+        <div><div style="font-weight:600;font-size:15px">Scraping</div><div style="color:var(--muted);font-size:12.5px" id="pausehint">Daily at the scheduled time</div></div>
         <label class="switch"><input type="checkbox" id="paused"><span class="slider"></span></label>
       </div>
-      <div class="field"><label>Repos per day</label><input type="number" id="reposPerRun" min="1" step="1"></div>
-      <div class="field"><label>Max stars / repo (0 = all)</label><input type="number" id="maxStars" min="0" step="50"></div>
-      <div class="field"><label>Delay between calls (ms)</label><input type="number" id="delayMs" min="0" step="50"></div>
-      <div class="field"><label>Concurrency</label><input type="number" id="concurrency" min="1" max="20" step="1"></div>
-      <div class="btnrow">
-        <button class="btn" id="save">Save settings</button>
-        <button class="btn sec" id="scrapeNow">Scrape next now</button>
+      <div class="ctrls">
+        <div class="field"><label>Repos per day</label><input type="number" id="reposPerRun" min="1" step="1"></div>
+        <div class="field"><label>Max stars / run</label><input type="number" id="maxStars" min="0" step="100"></div>
+        <div class="field"><label>Delay between calls (ms)</label><input type="number" id="delayMs" min="0" step="50"></div>
+        <div class="field"><label>Concurrency</label><input type="number" id="concurrency" min="1" max="20" step="1"></div>
       </div>
-      <div class="btnrow mt">
-        <input type="text" id="adhoc" placeholder="owner/repo (ad-hoc)">
-        <button class="btn sec" id="scrapeRepo">Scrape this repo</button>
-      </div>
+      <div style="margin-top:16px"><button class="btn" id="saveBtn">Save settings</button></div>
     </div>
-  </div>
+  </section>
 
-  <div class="card mt">
-    <h2>Run history</h2>
-    <div style="overflow-x:auto">
+  <!-- History -->
+  <section>
+    <div class="h"><h2>Run history</h2></div>
+    <div class="card pad" style="overflow-x:auto">
       <table>
-        <thead><tr>
-          <th>When</th><th>Trigger</th><th>Repos</th><th>Scraped</th>
-          <th>Imported</th><th>Existing</th><th>Suppressed</th><th>No-reply</th><th>Invalid</th><th>Took</th>
-        </tr></thead>
-        <tbody id="history"><tr><td colspan="10" style="color:var(--muted);text-align:center;padding:24px">No runs yet</td></tr></tbody>
+        <thead><tr><th>When</th><th>Trigger</th><th>Repos</th><th>Scraped</th><th>Imported</th><th>Existing</th><th>Suppressed</th><th>No-reply</th><th>Took</th></tr></thead>
+        <tbody id="history"><tr><td colspan="9" class="empty">No runs yet</td></tr></tbody>
       </table>
     </div>
-  </div>
+  </section>
 
   <div class="foot" id="foot"></div>
-</div>
+</main>
 <div class="toast" id="toast"></div>
 
 <script>
-const $ = id => document.getElementById(id);
-const fmt = n => (n ?? 0).toLocaleString();
-let editing = false; // pause polling overwrites while user edits inputs
-["reposPerRun","maxStars","delayMs","concurrency","adhoc"].forEach(id=>{
-  $(id).addEventListener('focus',()=>editing=true);
-  $(id).addEventListener('blur',()=>setTimeout(()=>editing=false,400));
+const $=id=>document.getElementById(id);
+const fmt=n=>(n??0).toLocaleString();
+const esc=s=>(s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let editing=false;
+["reposPerRun","maxStars","delayMs","concurrency"].forEach(id=>{
+  $(id).addEventListener("focus",()=>editing=true);
+  $(id).addEventListener("blur",()=>setTimeout(()=>editing=false,500));
 });
+function toast(m){const t=$("toast");t.textContent=m;t.classList.add("show");clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove("show"),2400);}
+function rel(ts){if(!ts||(""+ts).startsWith("0001"))return"never";const d=new Date(ts),s=(Date.now()-d)/1000;
+  if(s<60)return Math.max(0,Math.floor(s))+"s ago";if(s<3600)return Math.floor(s/60)+"m ago";if(s<86400)return Math.floor(s/3600)+"h ago";return Math.floor(s/86400)+"d ago";}
+function dur(a,b){const s=Math.max(0,(new Date(b)-new Date(a))/1000);return s<60?Math.round(s)+"s":Math.floor(s/60)+"m "+Math.round(s%60)+"s";}
 
-function toast(msg){const t=$("toast");t.textContent=msg;t.classList.add("show");setTimeout(()=>t.classList.remove("show"),2200);}
-function rel(ts){
-  if(!ts || ts.startsWith("0001")) return "never";
-  const d=new Date(ts), s=(Date.now()-d.getTime())/1000;
-  if(s<60) return Math.floor(s)+"s ago";
-  if(s<3600) return Math.floor(s/60)+"m ago";
-  if(s<86400) return Math.floor(s/3600)+"h ago";
-  return Math.floor(s/86400)+"d ago";
-}
-function dur(a,b){const s=Math.max(0,(new Date(b)-new Date(a))/1000);
-  return s<60?Math.round(s)+"s":Math.floor(s/60)+"m"+Math.round(s%60)+"s";}
-
-const METRICS=[
-  ["scraped","Stargazers scraped"],["sent","Sent to API"],["skipped","Already existed"],["runs","Total runs"],
-  ["suppressed","Suppressed"],["noreply","No-reply dropped"],["invalid","Invalid dropped"],["sent","—"]
-];
+async function api(path,opts){const r=await fetch(path,Object.assign({cache:"no-store"},opts||{}));return r;}
 
 async function refresh(){
-  let d;
-  try{ d = await (await fetch("/api/status",{cache:"no-store"})).json(); }
-  catch(e){ $("foot").textContent="⚠ cannot reach server"; return; }
-  const t=d.totals||{}, q=d.queue||{}, s=d.settings||{};
+  let d; try{ d=await(await api("/api/status")).json(); }catch(e){ $("foot").textContent="⚠ cannot reach server"; return; }
+  const t=d.totals||{}, q=d.queue||{}, s=d.settings||{}, repos=d.repos||[];
 
-  $("hero-imported").textContent = fmt(t.imported);
+  // header
+  const st = d.running?"busy":(s.paused?"paused":"on");
+  $("hdot").className="dot "+st;
+  $("hstate").textContent = d.running?"Scraping…":(s.paused?"Paused":"Idle");
+  $("m-next").textContent = s.paused?"paused":(d.schedule?`${d.schedule} ${d.timezone||""}`:"off");
+  $("m-queue").textContent = (q.total||0)+" repos";
+  $("m-tokens").textContent = d.tokens;
 
-  // pills
-  const next = d.schedule ? `${d.schedule} ${d.timezone||""}` : "disabled";
-  const pills=[
-    [d.running?"busy":(s.paused?"paused":"on"), d.running?"Scraping now":(s.paused?"Paused":"Idle")],
-    ["", `⏰ daily ${next}`],
-    ["", `🔑 ${d.tokens} token${d.tokens===1?"":"s"}`],
-    ["", `🗂 ${q.total||0} repos queued`],
-  ];
-  $("pills").innerHTML = pills.map(([c,txt])=>
-    `<span class="pill"><span class="dot ${c}"></span>${txt}</span>`).join("");
+  // KPIs
+  $("k-imported").textContent=fmt(t.imported);
+  $("k-scraped").textContent=fmt(t.scraped);
+  $("k-repos").textContent=fmt(q.total);
+  $("k-runs").textContent=fmt(t.runs);
+  $("k-source").textContent=`source = ${d.source} · list ${(d.listId||"").slice(0,8)}…`;
 
-  // metric cards
-  $("metrics").innerHTML = [
-    ["scraped","Stargazers scraped"],["sent","Sent to API"],["skipped","Already existed"],["runs","Total runs"],
-  ].map(([k,lbl])=>`<div class="card metric"><div class="n">${fmt(t[k])}</div><div class="k">${lbl}</div></div>`).join("")
-   + [["suppressed","Suppressed"],["noreply","No-reply dropped"],["invalid","Invalid dropped"]]
-     .map(([k,lbl])=>`<div class="card metric"><div class="n">${fmt(t[k])}</div><div class="k">${lbl}</div></div>`).join("");
-
-  // queue
-  const pct = q.total ? Math.round((q.cursor/q.total)*100) : 0;
-  $("qbar").style.width = pct+"%";
-  $("q-pos").textContent = `${q.cursor||0} / ${q.total||0} (${pct}%)`;
-  $("q-next").textContent = q.next ? `${q.next.Owner}/${q.next.Repo}` : "—";
-  $("q-cycles").textContent = q.cycles||0;
-  $("q-last").textContent = rel(t.lastRunAt);
-  $("q-list").textContent = d.listId || "—";
-
-  // settings (don't clobber while editing)
+  // settings
   if(!editing){
-    $("paused").checked = !!s.paused;
-    $("reposPerRun").value = s.reposPerRun;
-    $("maxStars").value = s.maxStars;
-    $("delayMs").value = s.delayMs;
-    $("concurrency").value = s.concurrency;
+    $("paused").checked=!!s.paused;
+    $("reposPerRun").value=s.reposPerRun; $("maxStars").value=s.maxStars;
+    $("delayMs").value=s.delayMs; $("concurrency").value=s.concurrency;
   }
-  $("scrapeNow").disabled = d.running;
-  $("scrapeRepo").disabled = d.running;
+  $("pausehint").textContent = s.paused?"Paused — scheduled runs are skipped":`Daily at ${d.schedule} ${d.timezone||""} · ${s.reposPerRun} repo/run`;
 
-  $("foot").textContent = `source="${d.source}" · API ${d.emailApi} · refreshed ${new Date().toLocaleTimeString()}`;
+  // repos
+  const nextKey = q.next?`${q.next.Owner}/${q.next.Repo}`:null;
+  $("repos-hint").textContent = repos.length?`${repos.length} tracked · progress = stargazers walked ÷ total`:"";
+  if(!repos.length){
+    $("repos").innerHTML=`<div class="card empty">No repositories queued yet — add some above.</div>`;
+  } else {
+    $("repos").innerHTML = repos.map(r=>{
+      const total=r.totalStars, proc=r.processed||0, known=total>0;
+      const pct = known?Math.min(100,Math.round(proc/total*100)):0;
+      const done = known && proc>=total;
+      const isNext = r.repo===nextKey;
+      let badge="";
+      if(r.lastError) badge=`<span class="badge err" title="${esc(r.lastError)}">error</span>`;
+      else if(done) badge=`<span class="badge done">done</span>`;
+      else if(isNext) badge=`<span class="badge next">next up</span>`;
+      const bar = known
+        ? `<div class="track"><i class="${done?'done':''}" style="width:${pct}%"></i></div>`
+        : `<div class="track idet"></div>`;
+      const totalTxt = known?`${fmt(proc)} / ${fmt(total)} stars`:`${fmt(proc)} walked · fetching total…`;
+      return `<div class="card repo">
+        <div class="top">
+          <a class="name mono" href="https://github.com/${esc(r.repo)}" target="_blank">${esc(r.repo)}</a>
+          ${badge}<span class="grow"></span>
+          <span class="num" style="color:var(--muted);font-size:12.5px">${known?pct+"%":""}</span>
+          <span class="acts">
+            <button class="btn ghost tiny" data-scrape="${esc(r.repo)}" title="Scrape this repo now">Scrape</button>
+            <button class="btn ghost tiny" data-remove="${esc(r.repo)}" title="Remove from queue">✕</button>
+          </span>
+        </div>
+        ${bar}
+        <div class="meta">
+          <span>${totalTxt}</span>
+          <span><b>${fmt(r.imported)}</b> emails ingested</span>
+          <span>last run <b>${rel(r.lastRunAt)}</b></span>
+        </div>
+      </div>`;
+    }).join("");
+  }
+  $("scrapeNext").disabled=d.running; $("addbtn").disabled=false;
+  $("foot").textContent=`API ${d.emailApi} · refreshed ${new Date().toLocaleTimeString()}`;
   renderHistory();
 }
 
 async function renderHistory(){
-  let h; try{ h = await (await fetch("/api/history",{cache:"no-store"})).json(); }catch(e){ return; }
-  if(!h || !h.length) return;
-  $("history").innerHTML = h.map(r=>{
-    const repos=(r.repos||[]);
-    const sum=k=>repos.reduce((a,x)=>a+((x.push&&x.push[k])||0),0);
-    const scr=repos.reduce((a,x)=>a+(x.scraped||0),0);
-    const names=repos.map(x=>x.repo).join(", ")||"—";
-    const errs=repos.filter(x=>x.error).map(x=>x.error).concat(r.error?[r.error]:[]);
+  let h; try{ h=await(await api("/api/history")).json(); }catch(e){return;}
+  if(!h||!h.length)return;
+  $("history").innerHTML=h.map(r=>{
+    const reps=r.repos||[], sum=k=>reps.reduce((a,x)=>a+((x.push&&x.push[k])||0),0);
+    const scr=reps.reduce((a,x)=>a+(x.scraped||0),0), names=reps.map(x=>x.repo).join(", ")||"—";
+    const errs=reps.filter(x=>x.error).map(x=>x.error).concat(r.error?[r.error]:[]);
     return `<tr>
-      <td title="${r.startedAt}">${rel(r.startedAt)}</td>
-      <td><span class="tag">${r.trigger}</span></td>
-      <td class="mono" title="${names}">${names.length>28?names.slice(0,28)+"…":names}</td>
-      <td>${fmt(scr)}</td><td>${fmt(sum("imported"))}</td><td>${fmt(sum("skipped"))}</td>
-      <td>${fmt(sum("suppressed"))}</td><td>${fmt(sum("noreply"))}</td><td>${fmt(sum("invalid"))}</td>
-      <td>${dur(r.startedAt,r.finishedAt)}${errs.length?` <span class="err" title="${errs.join(' | ').replace(/"/g,'')}">⚠</span>`:""}</td>
+      <td title="${r.startedAt}">${rel(r.startedAt)}</td><td><span class="tag">${esc(r.trigger)}</span></td>
+      <td class="mono" title="${esc(names)}">${esc(names.length>30?names.slice(0,30)+"…":names)}</td>
+      <td class="num">${fmt(scr)}</td><td class="num">${fmt(sum("imported"))}</td><td class="num">${fmt(sum("skipped"))}</td>
+      <td class="num">${fmt(sum("suppressed"))}</td><td class="num">${fmt(sum("noreply"))}</td>
+      <td class="num">${dur(r.startedAt,r.finishedAt)}${errs.length?` <span class="err" title="${esc(errs.join(' | '))}">⚠</span>`:""}</td>
     </tr>`;
   }).join("");
 }
 
-$("save").onclick = async ()=>{
-  const body={
-    paused:$("paused").checked,
-    reposPerRun:+$("reposPerRun").value, maxStars:+$("maxStars").value,
-    delayMs:+$("delayMs").value, concurrency:+$("concurrency").value,
-  };
-  await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-  editing=false; toast("Settings saved"); refresh();
-};
-$("paused").onchange = async ()=>{
-  await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({paused:$("paused").checked})});
-  toast($("paused").checked?"Scraping paused":"Scraping resumed");
-};
-$("scrapeNow").onclick = async ()=>{
-  const r=await fetch("/api/scrape",{method:"POST"});
-  toast(r.ok?"Run started":"Already running"); setTimeout(refresh,600);
-};
-$("scrapeRepo").onclick = async ()=>{
-  const repo=$("adhoc").value.trim(); if(!repo){toast("Enter owner/repo");return;}
-  const r=await fetch("/api/scrape",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({repo})});
+// actions
+$("addbtn").onclick=async()=>{
+  const text=$("addbox").value.trim(); if(!text){toast("Paste some owner/repo lines");return;}
+  $("addbtn").disabled=true;
+  const r=await api("/api/queue",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text})});
   const j=await r.json().catch(()=>({}));
-  toast(r.ok?`Scraping ${repo}`:(j.error||"Error")); setTimeout(refresh,600);
+  $("addbtn").disabled=false;
+  if(r.ok){ $("addbox").value=""; toast(`Added ${j.added} repo${j.added===1?"":"s"}${j.warnings&&j.warnings.length?` · ${j.warnings.length} skipped`:""}`); refresh(); }
+  else toast(j.error||"Could not add");
 };
+$("scrapeNext").onclick=async()=>{const r=await api("/api/scrape",{method:"POST"});toast(r.ok?"Run started":"Already running");setTimeout(refresh,700);};
+$("saveBtn").onclick=async()=>{
+  await api("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+    paused:$("paused").checked,reposPerRun:+$("reposPerRun").value,maxStars:+$("maxStars").value,delayMs:+$("delayMs").value,concurrency:+$("concurrency").value})});
+  editing=false;toast("Settings saved");refresh();
+};
+$("paused").onchange=async()=>{
+  await api("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({paused:$("paused").checked})});
+  toast($("paused").checked?"Scraping paused":"Scraping resumed");refresh();
+};
+document.addEventListener("click",async e=>{
+  const sc=e.target.closest("[data-scrape]"), rm=e.target.closest("[data-remove]");
+  if(sc){const repo=sc.dataset.scrape;const r=await api("/api/scrape",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({repo})});
+    toast(r.ok?`Scraping ${repo}`:"Already running");setTimeout(refresh,700);}
+  if(rm){const repo=rm.dataset.remove;if(!confirm(`Remove ${repo} from the queue?`))return;
+    await api("/api/queue",{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({repo})});
+    toast(`Removed ${repo}`);refresh();}
+});
 
 refresh();
-setInterval(refresh, 3000);
+setInterval(refresh,3000);
 </script>
 </body>
 </html>
