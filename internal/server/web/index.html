@@ -244,7 +244,25 @@ function human(sec){if(!isFinite(sec)||sec<=0)return"—";const d=Math.floor(sec
 function etaDate(sec){if(!isFinite(sec)||sec<=0)return"";const d=new Date(Date.now()+sec*1000);return d.toLocaleDateString(undefined,{month:"short",day:"numeric"})+(sec>86400*0?", "+d.toLocaleTimeString(undefined,{hour:"numeric"})+"":"");}
 async function api(p,o){return fetch(p,Object.assign({cache:"no-store"},o||{}));}
 
-function computeRate(h){let s=0,sec=0;for(const r of (h||[]).slice(0,20)){const reps=r.repos||[];s+=reps.reduce((a,x)=>a+(x.scraped||0),0);sec+=Math.max(0,(new Date(r.finishedAt)-new Date(r.startedAt))/1000);}return sec>2?s/sec:0;}
+// computeRate returns the current scrape rate (stargazers/sec) over only the
+// most RECENT runs — a fixed 12-minute window. History is newest-first, so we
+// stop at the first run older than the window. Averaging a fixed COUNT of runs
+// (the old behaviour) let a single stale slow run — e.g. an 8-minute run from a
+// past rate-limit/crash episode — drag the displayed rate (and the ETA, which
+// shares it) far below the true current speed.
+function computeRate(h){
+  const WINDOW=12*60*1000, now=Date.now();
+  let s=0,sec=0;
+  for(const r of (h||[])){
+    const fin=new Date(r.finishedAt).getTime();
+    if(!isFinite(fin)) continue;
+    if(now-fin>WINDOW) break;
+    const reps=r.repos||[];
+    s+=reps.reduce((a,x)=>a+(x.scraped||0),0);
+    sec+=Math.max(0,(fin-new Date(r.startedAt).getTime())/1000);
+  }
+  return sec>2?s/sec:0;
+}
 
 async function refresh(){
   let d,h,cc;

@@ -86,15 +86,18 @@ type Progress struct {
 	RepoTotal int    // total number of repos to scrape
 }
 
-// workerCfg bundles per-worker config passed into processUser.
+// workerCfg bundles per-worker config passed into processUser. The prefetched
+// user/repos for THIS stargazer are copied in by the worker under the profile
+// lock — processUser must never touch the shared prefetch maps directly, or it
+// races the prefetcher writing the next batch ("concurrent map read and write").
 type workerCfg struct {
-	maxRepos        int
-	maxForkRepos    int
-	targetOwner     string
-	targetRepo      string
-	useSearchAPI    bool
-	profiles        map[string]*gh.User  // pre-fetched profiles; may be nil
-	prefetchedRepos map[string][]gh.Repo // pre-fetched repos via GraphQL; may be nil
+	maxRepos     int
+	maxForkRepos int
+	targetOwner  string
+	targetRepo   string
+	useSearchAPI bool
+	user         *gh.User  // pre-fetched profile for this stargazer; nil if not prefetched
+	userRepos    []gh.Repo // pre-fetched repos (GraphQL) for this stargazer; nil if none
 }
 
 var csvHeaders = []string{
@@ -222,17 +225,22 @@ func runRepo(client *gh.Client, cfg Config, repo RepoTarget, outputPath string, 
 		go func() {
 			defer wg.Done()
 			for star := range workCh {
+				// Copy out THIS stargazer's prefetched data under the lock; never
+				// hand processUser a reference to the shared maps (it would race the
+				// prefetcher writing the next batch).
 				profileMu.RLock()
-				wcfg := workerCfg{
-					maxRepos:        cfg.MaxRepos,
-					maxForkRepos:    cfg.MaxForkRepos,
-					targetOwner:     repo.Owner,
-					targetRepo:      repo.Repo,
-					useSearchAPI:    cfg.UseSearchAPI,
-					profiles:        profiles,
-					prefetchedRepos: prefetchedRepos,
-				}
+				u := profiles[star.User.Login]
+				ur := prefetchedRepos[star.User.Login]
 				profileMu.RUnlock()
+				wcfg := workerCfg{
+					maxRepos:     cfg.MaxRepos,
+					maxForkRepos: cfg.MaxForkRepos,
+					targetOwner:  repo.Owner,
+					targetRepo:   repo.Repo,
+					useSearchAPI: cfg.UseSearchAPI,
+					user:         u,
+					userRepos:    ur,
+				}
 				resultCh <- processUser(client, star, wcfg)
 			}
 		}()
@@ -425,8 +433,8 @@ func processUser(client *gh.Client, star gh.StarEntry, cfg workerCfg) Result {
 	}
 
 	var fetchErr error
-	user, hasCached := cfg.profiles[star.User.Login]
-	if !hasCached {
+	user := cfg.user
+	if user == nil {
 		user, fetchErr = client.GetUser(star.User.Login)
 	}
 	if fetchErr != nil || user == nil {
@@ -502,8 +510,8 @@ func processUser(client *gh.Client, star gh.StarEntry, cfg workerCfg) Result {
 		}
 		localScanned := copyScanned()
 		var repos []gh.Repo
-		if pr, ok := cfg.prefetchedRepos[star.User.Login]; ok && pr != nil {
-			repos = pr
+		if cfg.userRepos != nil {
+			repos = cfg.userRepos
 		} else {
 			repos, _ = client.GetUserRepos(star.User.Login)
 		}

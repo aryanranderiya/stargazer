@@ -42,7 +42,7 @@ func TestPushCSV(t *testing.T) {
 		{"ghost", "Ghost", "12+ghost@users.noreply.github.com", "noreply", "", "", "", "0", "0", "", "https://github.com/ghost"},
 		{"bad", "Bad Row", "not-an-email", "profile", "", "", "", "1", "1", "", "url"},
 		{"octoclone", "Octo Clone", "octo@github.com", "commit", "", "", "", "2", "2", "", "url"}, // dup email
-		{"cher", "Cher", "cher@example.com", "profile", "", "", "", "5", "5", "", "https://github.com/cher"},
+		{"cher", "Cher", "cher@cher.dev", "profile", "", "", "", "5", "5", "", "https://github.com/cher"},
 	}
 	path := writeCSV(t, rows)
 
@@ -128,6 +128,29 @@ func TestPushCSV(t *testing.T) {
 	}
 	if len(octo.Tags) < 2 || octo.Tags[0] != "stargazer" || octo.Tags[1] != "repo:octo/repo" {
 		t.Errorf("tags = %v, want [stargazer repo:octo/repo]", octo.Tags)
+	}
+}
+
+func TestValidEmail(t *testing.T) {
+	valid := []string{
+		"a@b.co", "user.name+tag@example.io", "dev_1@sub.domain.com",
+		"o'brien@mail.org", "torvalds@linux-foundation.org",
+	}
+	invalid := []string{
+		"", "not-an-email", "name@host.(none)", "user@localhost",
+		"a@b", "a@b.c", "@nodomain.com", "trailingdot@x.com.",
+		".leading@x.com", "double..dot@x.com", "spaces in@x.com",
+		"you@example.com", "git@example.org", "x@thing.local",
+	}
+	for _, e := range valid {
+		if !validEmail(e) {
+			t.Errorf("validEmail(%q) = false, want true", e)
+		}
+	}
+	for _, e := range invalid {
+		if validEmail(e) {
+			t.Errorf("validEmail(%q) = true, want false", e)
+		}
 	}
 }
 

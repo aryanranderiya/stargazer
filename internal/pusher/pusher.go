@@ -21,9 +21,35 @@ import (
 
 const noreplySuffix = "@users.noreply.github.com"
 
-// emailRe is a pragmatic validator matching the platform's expectation that
-// every imported address is well-formed.
-var emailRe = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
+// validEmailRe mirrors the email platform's Zod email validator (minus its two
+// negative-lookahead guards, which RE2 can't express — those are checked in
+// validEmail). The old loose check let through addresses the platform rejects,
+// and a single rejected address 400s the ENTIRE import batch. Commit author
+// emails come straight from git metadata and are often junk (you@example.com,
+// user@localhost, name@host.(none)), so this matters now that we resolve them.
+var validEmailRe = regexp.MustCompile(`^[A-Za-z0-9_'+\-.]*[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$`)
+
+// validEmail reports whether email will be accepted by the platform's importer.
+func validEmail(email string) bool {
+	if email == "" || strings.HasPrefix(email, ".") || strings.Contains(email, "..") {
+		return false
+	}
+	if !validEmailRe.MatchString(email) {
+		return false
+	}
+	// Reject git's universal placeholder / non-routable identities — valid format
+	// but never a real person.
+	switch {
+	case strings.HasSuffix(email, "@example.com"),
+		strings.HasSuffix(email, "@example.org"),
+		strings.HasSuffix(email, "@example.net"),
+		strings.HasSuffix(email, "@localhost"),
+		strings.HasSuffix(email, ".local"),
+		strings.HasSuffix(email, ".invalid"):
+		return false
+	}
+	return true
+}
 
 // Client imports contacts into the email platform.
 type Client struct {
@@ -186,12 +212,13 @@ func (c *Client) PushCSV(path, sourceRepo string) (Stats, error) {
 		if len(batch) == 0 {
 			return nil
 		}
-		resp, err := c.postImport(batch)
+		resp, dropped, err := c.importResilient(batch)
 		if err != nil {
 			return err
 		}
 		stats.Batches++
-		stats.Sent += len(batch)
+		stats.Sent += len(batch) - dropped
+		stats.Invalid += dropped
 		stats.Imported += resp.Imported
 		stats.Skipped += resp.Skipped
 		stats.Suppressed += resp.Suppressed
@@ -218,7 +245,7 @@ func (c *Client) PushCSV(path, sourceRepo string) (Stats, error) {
 
 		email := strings.ToLower(get("email"))
 		login, esrc := get("login"), get("email_source")
-		if email == "" || !emailRe.MatchString(email) {
+		if !validEmail(email) {
 			stats.Invalid++
 			c.emit(Record{Login: login, Email: get("email"), EmailSource: esrc, Repo: sourceRepo, Status: "invalid"})
 			continue
@@ -274,6 +301,39 @@ func (c *Client) PushCSV(path, sourceRepo string) (Stats, error) {
 		return stats, err
 	}
 	return stats, nil
+}
+
+// importResilient imports a batch, isolating any contacts the platform rejects
+// for validation (HTTP 400) by bisecting the batch, so one malformed address
+// can't fail the whole import. Returns the summed response and the number of
+// contacts dropped. Non-validation errors (network, auth, 5xx) propagate so the
+// run surfaces a real failure. With validEmail mirroring the platform's rules
+// this rarely triggers — it's a safety net for any rule we don't replicate.
+func (c *Client) importResilient(contacts []Contact) (importResponse, int, error) {
+	resp, err := c.postImport(contacts)
+	if err == nil {
+		return resp, 0, nil
+	}
+	if !strings.Contains(err.Error(), "400") {
+		return importResponse{}, 0, err
+	}
+	if len(contacts) <= 1 {
+		return importResponse{}, len(contacts), nil // the offending contact — drop it
+	}
+	mid := len(contacts) / 2
+	r1, d1, e1 := c.importResilient(contacts[:mid])
+	if e1 != nil {
+		return importResponse{}, 0, e1
+	}
+	r2, d2, e2 := c.importResilient(contacts[mid:])
+	if e2 != nil {
+		return importResponse{}, 0, e2
+	}
+	return importResponse{
+		Imported:   r1.Imported + r2.Imported,
+		Skipped:    r1.Skipped + r2.Skipped,
+		Suppressed: r1.Suppressed + r2.Suppressed,
+	}, d1 + d2, nil
 }
 
 func (c *Client) postImport(contacts []Contact) (importResponse, error) {
