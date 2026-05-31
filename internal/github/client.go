@@ -700,7 +700,6 @@ type gqlUser struct {
 	Login      string `json:"login"`
 	DatabaseID int64  `json:"databaseId"`
 	Name       string `json:"name"`
-	Email      string `json:"email"`
 	Company    string `json:"company"`
 	Location   string `json:"location"`
 	Bio        string `json:"bio"`
@@ -755,7 +754,15 @@ func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) (map[strin
 		var sb strings.Builder
 		sb.WriteString("query {\n")
 		for i, login := range chunk {
-			fmt.Fprintf(&sb, "  u%d: user(login: %q) { login databaseId name email company location bio followers { totalCount } repositories(first: 12, orderBy: {field: PUSHED_AT, direction: DESC}, ownerAffiliations: OWNER) { totalCount nodes { nameWithOwner isFork isPrivate defaultBranchRef { target { ... on Commit { history(first: 3) { nodes { author { email name user { login } } } } } } } } } url }\n", i, login)
+			// NOTE: the top-level User.email field is deliberately omitted — it
+			// requires the read:user/user:email OAuth scope, and our tokens carry
+			// only `repo`. Requesting it makes GitHub reject the ENTIRE batch
+			// ("token has not been granted the required scopes"), which silently
+			// forces a per-user REST GetUser for every stargazer (the real
+			// throughput killer). The commit author.email below is GitActor.email
+			// (git metadata, public, not scope-gated), so it resolves fine. To also
+			// capture profile emails via GraphQL, grant the tokens read:user.
+			fmt.Fprintf(&sb, "  u%d: user(login: %q) { login databaseId name company location bio followers { totalCount } repositories(first: 12, orderBy: {field: PUSHED_AT, direction: DESC}, ownerAffiliations: OWNER) { totalCount nodes { nameWithOwner isFork isPrivate defaultBranchRef { target { ... on Commit { history(first: 3) { nodes { author { email name user { login } } } } } } } } } url }\n", i, login)
 		}
 		sb.WriteString("}")
 
@@ -784,7 +791,6 @@ func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) (map[strin
 				Login:       gu.Login,
 				ID:          gu.DatabaseID,
 				Name:        gu.Name,
-				Email:       gu.Email,
 				Company:     gu.Company,
 				Location:    gu.Location,
 				Bio:         gu.Bio,
