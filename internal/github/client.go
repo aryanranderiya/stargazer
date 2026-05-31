@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"math/rand"
 	"net"
@@ -91,6 +92,10 @@ type User struct {
 	Followers   int    `json:"followers"`
 	HTMLURL     string `json:"html_url"`
 	Type        string `json:"type"`
+	// CommitEmail is a real (non-noreply) author email resolved from the user's
+	// own-repo default-branch history during the GraphQL batch fetch. Empty when
+	// unresolved. Populated only by GetUsersBatch, not the REST GetUser.
+	CommitEmail string `json:"-"`
 }
 
 // StarEntry is returned by the star+json accept header for stargazers.
@@ -705,9 +710,24 @@ type gqlUser struct {
 	Repositories struct {
 		TotalCount int `json:"totalCount"`
 		Nodes      []struct {
-			NameWithOwner string `json:"nameWithOwner"`
-			IsFork        bool   `json:"isFork"`
-			IsPrivate     bool   `json:"isPrivate"`
+			NameWithOwner    string `json:"nameWithOwner"`
+			IsFork           bool   `json:"isFork"`
+			IsPrivate        bool   `json:"isPrivate"`
+			DefaultBranchRef *struct {
+				Target *struct {
+					History struct {
+						Nodes []struct {
+							Author struct {
+								Email string `json:"email"`
+								Name  string `json:"name"`
+								User  *struct {
+									Login string `json:"login"`
+								} `json:"user"`
+							} `json:"author"`
+						} `json:"nodes"`
+					} `json:"history"`
+				} `json:"target"`
+			} `json:"defaultBranchRef"`
 		} `json:"nodes"`
 	} `json:"repositories"`
 	URL string `json:"url"`
@@ -735,13 +755,16 @@ func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) (map[strin
 		var sb strings.Builder
 		sb.WriteString("query {\n")
 		for i, login := range chunk {
-			fmt.Fprintf(&sb, "  u%d: user(login: %q) { login databaseId name email company location bio followers { totalCount } repositories(first: 30, orderBy: {field: PUSHED_AT, direction: DESC}, ownerAffiliations: OWNER) { totalCount nodes { nameWithOwner isFork isPrivate } } url }\n", i, login)
+			fmt.Fprintf(&sb, "  u%d: user(login: %q) { login databaseId name email company location bio followers { totalCount } repositories(first: 12, orderBy: {field: PUSHED_AT, direction: DESC}, ownerAffiliations: OWNER) { totalCount nodes { nameWithOwner isFork isPrivate defaultBranchRef { target { ... on Commit { history(first: 3) { nodes { author { email name user { login } } } } } } } } } url }\n", i, login)
 		}
 		sb.WriteString("}")
 
 		var data map[string]json.RawMessage
 		if err := c.graphql(sb.String(), &data); err != nil {
-			// Silently skip this chunk on error.
+			// Skip this chunk but log it — a malformed query or a points/complexity
+			// rejection would otherwise silently degrade every email to a REST
+			// fallback with no visible signal.
+			log.Printf("graphql batch (%d users) failed: %v", len(chunk), err)
 			if onProgress != nil {
 				fetched += len(chunk)
 				onProgress(fetched)
@@ -771,7 +794,13 @@ func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) (map[strin
 			}
 			result[gu.Login] = u
 
-			// Convert repo nodes to []Repo.
+			// Convert repo nodes to []Repo and, while we're walking them, resolve
+			// a real commit author-email from the default-branch history. The user
+			// owns these repos, so recent commits are overwhelmingly theirs; prefer
+			// a commit whose linked author is this user, else accept an unlinked
+			// real email (a bare git identity, almost always the owner's). This is
+			// the GraphQL email resolver — it does the work the REST own-repo scan
+			// used to, on the idle GraphQL pool, with zero extra requests.
 			if len(gu.Repositories.Nodes) > 0 {
 				repos := make([]Repo, 0, len(gu.Repositories.Nodes))
 				for _, node := range gu.Repositories.Nodes {
@@ -780,6 +809,19 @@ func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) (map[strin
 						Fork:     node.IsFork,
 						Private:  node.IsPrivate,
 					})
+					if u.CommitEmail != "" || node.IsFork || node.IsPrivate || node.DefaultBranchRef == nil || node.DefaultBranchRef.Target == nil {
+						continue
+					}
+					for _, com := range node.DefaultBranchRef.Target.History.Nodes {
+						if !IsRealEmail(com.Author.Email) {
+							continue
+						}
+						if com.Author.User != nil && !strings.EqualFold(com.Author.User.Login, gu.Login) {
+							continue // commit by a different GitHub user on this repo
+						}
+						u.CommitEmail = com.Author.Email
+						break
+					}
 				}
 				reposResult[gu.Login] = repos
 			}

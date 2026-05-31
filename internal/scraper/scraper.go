@@ -40,7 +40,7 @@ type Result struct {
 	Login       string
 	Name        string
 	Email       string
-	EmailSource string // "profile", "commit", "events", "search", or "noreply"
+	EmailSource string // "profile", "commit", "search", or "noreply"
 	FetchFailed bool
 	Company     string
 	Location    string
@@ -454,63 +454,25 @@ func processUser(client *gh.Client, star gh.StarEntry, cfg workerCfg) Result {
 		return result
 	}
 
-	// 2 & 3. Target repo commits and event data — fetched concurrently.
-	type commitResult struct{ email string }
-	type eventResult struct {
-		email string
-		repos []string
-		err   error
-	}
-
-	commitCh := make(chan commitResult, 1)
-	eventCh := make(chan eventResult, 1)
-
-	if cfg.targetOwner != "" && cfg.targetRepo != "" {
-		repoFull := cfg.targetOwner + "/" + cfg.targetRepo
-		scanned[repoFull] = true
-		go func() {
-			commitCh <- commitResult{firstRealEmailInCommits(client, repoFull, star.User.Login)}
-		}()
-	} else {
-		commitCh <- commitResult{}
-	}
-
-	go func() {
-		email, repos, err := client.GetUserEventData(star.User.Login)
-		eventCh <- eventResult{email, repos, err}
-	}()
-
-	cr := <-commitCh
-	if cr.email != "" {
-		result.Email = cr.email
+	// 2. Commit author-email from the user's own repos, resolved during the
+	// GraphQL batch fetch (default-branch history) — no extra REST call. This
+	// taps the otherwise-idle GraphQL rate-limit pool and resolves the bulk of
+	// emails before any REST fallback runs.
+	if user != nil && gh.IsRealEmail(user.CommitEmail) {
+		result.Email = user.CommitEmail
 		result.EmailSource = "commit"
-		// Drain event goroutine.
-		<-eventCh
 		return result
 	}
 
-	er := <-eventCh
-	if er.err == nil {
-		if er.email != "" {
-			result.Email = er.email
-			result.EmailSource = "events"
+	// 3. Target-repo commits — the stargazer may be a contributor to the very
+	// repo we're scraping.
+	if cfg.targetOwner != "" && cfg.targetRepo != "" {
+		repoFull := cfg.targetOwner + "/" + cfg.targetRepo
+		scanned[repoFull] = true
+		if email := firstRealEmailInCommits(client, repoFull, star.User.Login); email != "" {
+			result.Email = email
+			result.EmailSource = "commit"
 			return result
-		}
-		cap := 3
-		for _, repoName := range er.repos {
-			if cap == 0 {
-				break
-			}
-			if scanned[repoName] {
-				continue
-			}
-			scanned[repoName] = true
-			cap--
-			if email := firstRealEmailInCommits(client, repoName, star.User.Login); email != "" {
-				result.Email = email
-				result.EmailSource = "commit"
-				return result
-			}
 		}
 	}
 
@@ -531,9 +493,10 @@ func processUser(client *gh.Client, star gh.StarEntry, cfg workerCfg) Result {
 		return m
 	}
 
-	// Goroutine A: steps 4+5 — own repos then forked repos.
+	// Goroutine A: steps 4+5 — own repos then forked repos. Skipped entirely
+	// when the user has no public repos (nothing to scan) or both caps are 0.
 	go func() {
-		if cfg.maxRepos == 0 && cfg.maxForkRepos == 0 {
+		if (cfg.maxRepos == 0 && cfg.maxForkRepos == 0) || result.PublicRepos == 0 {
 			parallelCh <- repoEmailResult{}
 			return
 		}
