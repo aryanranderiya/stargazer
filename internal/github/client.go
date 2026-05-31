@@ -673,6 +673,16 @@ func (c *Client) graphql(query string, v interface{}) error {
 				return err
 			}
 			if len(envelope.Errors) > 0 {
+				// Partial errors (e.g. "Could not resolve to a User" for one aliased
+				// login) still return data for every alias that DID resolve — use it
+				// instead of discarding the whole batch over one deleted/renamed user.
+				// A fully-empty payload (query-validation or scope rejection, which
+				// never executes) is the only fatal case; returning the error lets the
+				// caller retry (e.g. without the scope-gated email field).
+				if d := string(envelope.Data); len(envelope.Data) > 0 && d != "null" && d != "{}" {
+					result = json.Unmarshal(envelope.Data, v)
+					return nil
+				}
 				result = fmt.Errorf("graphql error: %s", envelope.Errors[0].Message)
 				return nil
 			}
@@ -700,6 +710,7 @@ type gqlUser struct {
 	Login      string `json:"login"`
 	DatabaseID int64  `json:"databaseId"`
 	Name       string `json:"name"`
+	Email      string `json:"email"` // empty unless the serving token had read:user scope
 	Company    string `json:"company"`
 	Location   string `json:"location"`
 	Bio        string `json:"bio"`
@@ -740,7 +751,12 @@ type gqlUser struct {
 func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) (map[string]*User, map[string][]Repo) {
 	result := make(map[string]*User)
 	reposResult := make(map[string][]Repo)
-	const chunkSize = 20
+	// Small chunks keep each query cheap for GitHub to compute: the nested commit
+	// history below is expensive server-side (it walks each repo's commit graph),
+	// and large chunks made GitHub return HTTP 502 — failing the whole batch and
+	// forcing a per-user REST fallback. 10 × 5 repos × 2 commits stays well within
+	// what the GraphQL backend serves reliably.
+	const chunkSize = 10
 
 	fetched := 0
 	for start := 0; start < len(logins); start += chunkSize {
@@ -751,24 +767,38 @@ func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) (map[strin
 		chunk := logins[start:end]
 
 		// Build the GraphQL query with aliases u0, u1, ...
-		var sb strings.Builder
-		sb.WriteString("query {\n")
-		for i, login := range chunk {
-			// NOTE: the top-level User.email field is deliberately omitted — it
-			// requires the read:user/user:email OAuth scope, and our tokens carry
-			// only `repo`. Requesting it makes GitHub reject the ENTIRE batch
-			// ("token has not been granted the required scopes"), which silently
-			// forces a per-user REST GetUser for every stargazer (the real
-			// throughput killer). The commit author.email below is GitActor.email
-			// (git metadata, public, not scope-gated), so it resolves fine. To also
-			// capture profile emails via GraphQL, grant the tokens read:user.
-			fmt.Fprintf(&sb, "  u%d: user(login: %q) { login databaseId name company location bio followers { totalCount } repositories(first: 12, orderBy: {field: PUSHED_AT, direction: DESC}, ownerAffiliations: OWNER) { totalCount nodes { nameWithOwner isFork isPrivate defaultBranchRef { target { ... on Commit { history(first: 3) { nodes { author { email name user { login } } } } } } } } } url }\n", i, login)
+		//
+		// The top-level User.email field needs the read:user/user:email scope.
+		// Tokens carry a mix of scopes (some repo-only), and round-robin means any
+		// token may serve this query, so we try WITH email first and, if a token
+		// rejects it for scope, retry the same batch WITHOUT email. Either way the
+		// batch succeeds via GraphQL (no per-user REST fallback); only the profile
+		// email is skipped on repo-only tokens. The commit author.email below is
+		// GitActor.email (public git metadata, never scope-gated), so it always
+		// resolves. History is kept shallow (5 repos × 2 commits) — deeper queries
+		// make GitHub return HTTP 502 and fail the whole batch.
+		buildQuery := func(withEmail bool) string {
+			emailField := ""
+			if withEmail {
+				emailField = "email "
+			}
+			var sb strings.Builder
+			sb.WriteString("query {\n")
+			for i, login := range chunk {
+				fmt.Fprintf(&sb, "  u%d: user(login: %q) { login databaseId name %scompany location bio followers { totalCount } repositories(first: 5, orderBy: {field: PUSHED_AT, direction: DESC}, ownerAffiliations: OWNER) { totalCount nodes { nameWithOwner isFork isPrivate defaultBranchRef { target { ... on Commit { history(first: 2) { nodes { author { email name user { login } } } } } } } } } url }\n", i, login, emailField)
+			}
+			sb.WriteString("}")
+			return sb.String()
 		}
-		sb.WriteString("}")
 
 		var data map[string]json.RawMessage
-		if err := c.graphql(sb.String(), &data); err != nil {
-			// Skip this chunk but log it — a malformed query or a points/complexity
+		err := c.graphql(buildQuery(true), &data)
+		if err != nil && strings.Contains(strings.ToLower(err.Error()), "scope") {
+			// Token lacks read:user — retry this batch without the profile email.
+			err = c.graphql(buildQuery(false), &data)
+		}
+		if err != nil {
+			// Skip this chunk but log it — a malformed query or a 502/complexity
 			// rejection would otherwise silently degrade every email to a REST
 			// fallback with no visible signal.
 			log.Printf("graphql batch (%d users) failed: %v", len(chunk), err)
@@ -791,6 +821,7 @@ func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) (map[strin
 				Login:       gu.Login,
 				ID:          gu.DatabaseID,
 				Name:        gu.Name,
+				Email:       gu.Email,
 				Company:     gu.Company,
 				Location:    gu.Location,
 				Bio:         gu.Bio,
