@@ -346,7 +346,13 @@ func runRepo(client *gh.Client, cfg Config, repo RepoTarget, outputPath string, 
 		// per-token throttle + secondary-limit backoff — fills the token budget.
 		// The buffered pendingCh gives backpressure; a dispatcher drains it IN
 		// ORDER so stargazers still reach the workers in listing order.
-		const prefetchDepth = 4
+		// Scale in-flight prefetches with the token count so utilization rises as
+		// tokens are added; the auto-tune rations if we approach the budget, and
+		// the secondary-limit backoff guards the concurrency ceiling.
+		prefetchDepth := len(cfg.Tokens) * 2
+		if prefetchDepth < 4 {
+			prefetchDepth = 4
+		}
 		pendingCh := make(chan (<-chan prefetchResult), prefetchDepth)
 		dispDone := make(chan struct{})
 		go func() {
