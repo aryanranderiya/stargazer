@@ -323,11 +323,9 @@ func runRepo(client *gh.Client, cfg Config, repo RepoTarget, outputPath string, 
 			return ch
 		}
 
-		dispatchPrefetched := func(pending <-chan prefetchResult) {
-			if pending == nil {
-				return
-			}
-			res := <-pending
+		// merge folds a finished prefetch into the shared maps and feeds its
+		// stargazers to the worker pool.
+		merge := func(res prefetchResult) {
 			profileMu.Lock()
 			for k, v := range res.profiles {
 				profiles[k] = v
@@ -341,65 +339,53 @@ func runRepo(client *gh.Client, cfg Config, repo RepoTarget, outputPath string, 
 			}
 		}
 
-		var batch []gh.StarEntry
-		var pending <-chan prefetchResult
-		total := 0
+		// Depth-N prefetch pipeline: keep up to prefetchDepth GetUsersBatch calls
+		// in flight at once (each itself fetches its chunks concurrently) instead
+		// of one batch at a time. The serial depth-1 pipeline was the throughput
+		// ceiling (~750/min); running several batches in parallel — paced by the
+		// per-token throttle + secondary-limit backoff — fills the token budget.
+		// The buffered pendingCh gives backpressure; a dispatcher drains it IN
+		// ORDER so stargazers still reach the workers in listing order.
+		const prefetchDepth = 4
+		pendingCh := make(chan (<-chan prefetchResult), prefetchDepth)
+		dispDone := make(chan struct{})
+		go func() {
+			defer close(dispDone)
+			for ch := range pendingCh {
+				merge(<-ch)
+			}
+		}()
 
+		var batch []gh.StarEntry
+		total := 0
 		for star := range starCh {
 			total++
 			batch = append(batch, star)
 			if len(batch) >= profileBatchSize {
-				send(progressCh, Progress{
-					Stage:     "processing",
-					Status:    fmt.Sprintf("[%s] Processing stargazers... (%d fetched so far)", repoName, total),
-					Total:     total,
-					RepoName:  repoName,
-					RepoIndex: repoIdx,
-					RepoTotal: repoTotal,
-				})
-				newPending := startPrefetch(batch)
+				pendingCh <- startPrefetch(batch) // startPrefetch copies the batch synchronously
 				batch = batch[:0]
-				dispatchPrefetched(pending)
-				pending = newPending
+				if total%(profileBatchSize*4) == 0 {
+					send(progressCh, Progress{
+						Stage: "processing", Status: fmt.Sprintf("[%s] Processing stargazers... (%d fetched so far)", repoName, total),
+						Total: total, RepoName: repoName, RepoIndex: repoIdx, RepoTotal: repoTotal,
+					})
+				}
 			}
 		}
-
 		if len(batch) > 0 {
-			newPending := startPrefetch(batch)
-			dispatchPrefetched(pending)
-			pending = newPending
+			pendingCh <- startPrefetch(batch)
 		}
-		dispatchPrefetched(pending)
+		close(pendingCh)
+		<-dispDone // all prefetched stargazers have been handed to the workers
 
-		// The GraphQL stargazer stream reports its final state exactly once,
-		// buffered and sent before its channel closes, so it's ready now without
-		// blocking. Capture the resume cursor + exhausted flag regardless of error.
+		// The GraphQL stargazer stream reports its final state once (buffered),
+		// available now without blocking. Capture resume cursor + exhausted flag.
 		res := <-resCh
 		finalCursor = res.LastCursor
 		exhausted = res.Exhausted
 		if res.Err != nil && total == 0 {
 			producerErr = res.Err
-			close(workCh)
-			wg.Wait()
-			close(resultCh)
-			return
 		}
-
-		if total == 0 {
-			close(workCh)
-			wg.Wait()
-			close(resultCh)
-			return
-		}
-
-		send(progressCh, Progress{
-			Stage:     "processing",
-			Status:    fmt.Sprintf("[%s] All %d stargazers fetched. Processing...", repoName, total),
-			Total:     total,
-			RepoName:  repoName,
-			RepoIndex: repoIdx,
-			RepoTotal: repoTotal,
-		})
 
 		close(workCh)
 		wg.Wait()
