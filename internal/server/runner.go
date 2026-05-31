@@ -3,7 +3,6 @@ package server
 import (
 	"fmt"
 	"log"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -217,14 +216,14 @@ func (r *Runner) scrapeAndPush(runDir string, t scraper.RepoTarget, set Settings
 	return rep
 }
 
-// autoTune nudges the per-call delay based on the batch's fetch-failure rate:
-// back off when failures climb (limits too aggressive), speed up when they're
-// negligible. Self-learns a sustainable pace within [50ms, 2000ms].
-// autoTune paces the per-call delay to spend the available GitHub rate-limit
-// budget evenly until it resets — maximising throughput without exhausting it.
-// With round-robin token use the call rate is numTokens/delay, so
-// delay = numTokens * secondsToReset / remainingCalls. The /rate_limit probe is
-// free (it doesn't consume the core budget).
+// autoTune sets the per-call throttle. Key insight: when the rate-limit budget
+// is ABUNDANT, we should run at the FLOOR (let concurrency + pipeline be the
+// governor) — NOT spread the remaining budget evenly over the whole reset window
+// (that rations a budget we're nowhere near using and just adds latency to the
+// sequential critical path, which is what slowed us down). Only when a pool runs
+// LOW (< lowFrac of its limit) do we start rationing what's left over the time
+// until reset, so we glide to the reset instead of slamming into a hard 403.
+// Considers both REST core and GraphQL; GraphQL now carries ~all the load.
 func (r *Runner) autoTune(_ int, _ int, _ bool) {
 	if !r.settings.Get().AutoTune {
 		return
@@ -233,27 +232,17 @@ func (r *Runner) autoTune(_ int, _ int, _ bool) {
 	if len(statuses) == 0 {
 		return
 	}
-	// Pace by the BINDING pool. Almost all work is now GraphQL (profiles, emails,
-	// stargazer listing); REST core only sees rare fallbacks. Tuning on core alone
-	// (the old behaviour) optimised the idle pool and ignored the one actually
-	// being spent. Compute the even-spend delay for BOTH pools and take the larger
-	// (tighter) one, so we never exhaust either: delay = N * secondsToReset /
-	// remaining * 1000. The per-token throttle then enforces it across N tokens.
-	poolDelay := func(remaining int, reset time.Time) float64 {
-		horizon := time.Until(reset).Seconds()
-		if horizon < 60 {
-			horizon = 60
-		}
-		if remaining < 1 {
-			remaining = 1
-		}
-		return float64(len(statuses)) * horizon / float64(remaining) * 1000.0
-	}
-	core, gql := 0, 0
+	const floorMs = 25.0
+	const lowFrac = 0.30 // only ration a pool once it's below 30% remaining
+	worst := floorMs
+
+	var core, coreLimit, gql, gqlLimit int
 	var coreReset, gqlReset time.Time
 	for _, s := range statuses {
 		core += s.Core.Remaining
+		coreLimit += s.Core.Limit
 		gql += s.GraphQL.Remaining
+		gqlLimit += s.GraphQL.Limit
 		if coreReset.IsZero() || s.Core.Reset.Before(coreReset) {
 			coreReset = s.Core.Reset
 		}
@@ -261,10 +250,24 @@ func (r *Runner) autoTune(_ int, _ int, _ bool) {
 			gqlReset = s.GraphQL.Reset
 		}
 	}
-	next := int(math.Max(poolDelay(core, coreReset), poolDelay(gql, gqlReset)))
-	if next < 25 { // floor: budget is ample, so let concurrency be the governor
-		next = 25
+	ration := func(remaining, limit int, reset time.Time) {
+		if limit <= 0 || float64(remaining)/float64(limit) >= lowFrac {
+			return // abundant — don't slow down
+		}
+		horizon := time.Until(reset).Seconds()
+		if horizon < 60 {
+			horizon = 60
+		}
+		if remaining < 1 {
+			remaining = 1
+		}
+		if d := float64(len(statuses)) * horizon / float64(remaining) * 1000.0; d > worst {
+			worst = d
+		}
 	}
+	ration(core, coreLimit, coreReset)
+	ration(gql, gqlLimit, gqlReset)
+	next := int(worst)
 	if next > 5000 {
 		next = 5000
 	}
