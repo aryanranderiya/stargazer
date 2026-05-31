@@ -133,5 +133,8 @@ func (c Config) InitialSettings() Settings {
 		Concurrency:  c.Concurrency,
 		MaxRepos:     c.MaxRepos,
 		MaxForkRepos: c.MaxForkRepos,
+		// 2 concurrent repos saturate the GraphQL budget that a single sequential
+		// repo can only half-fill; the auto-tune still rations near the limit.
+		MaxConcurrentRepos: 2,
 	}
 }

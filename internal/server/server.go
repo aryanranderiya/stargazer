@@ -271,10 +271,8 @@ func (s *Server) handleScrape(w http.ResponseWriter, r *http.Request) {
 		override = targets
 	}
 
-	if s.runner.Running() {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "a scrape run is already in progress"})
-		return
-	}
+	// No global "already running" reject: repos scrape concurrently now, and
+	// ScrapeRepo's per-repo lock skips any repo already in flight.
 	go func() {
 		if _, err := s.runner.Run("manual", override); err != nil {
 			log.Printf("manual run error: %v", err)

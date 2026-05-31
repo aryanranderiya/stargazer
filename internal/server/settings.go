@@ -19,6 +19,10 @@ type Settings struct {
 	Concurrency  int  `json:"concurrency"`
 	MaxRepos     int  `json:"maxRepos"`
 	MaxForkRepos int  `json:"maxForkRepos"`
+	// MaxConcurrentRepos is how many repos the worker scrapes at once. A single
+	// repo's sequential cursor listing only fills ~half the token budget, so 2+
+	// concurrent repos saturate it; the auto-tune still rations near the limit.
+	MaxConcurrentRepos int `json:"maxConcurrentRepos"`
 }
 
 // SettingsPatch is a partial update; nil fields are left unchanged.
@@ -28,9 +32,10 @@ type SettingsPatch struct {
 	ReposPerRun  *int  `json:"reposPerRun"`
 	MaxStars     *int  `json:"maxStars"`
 	DelayMs      *int  `json:"delayMs"`
-	Concurrency  *int  `json:"concurrency"`
-	MaxRepos     *int  `json:"maxRepos"`
-	MaxForkRepos *int  `json:"maxForkRepos"`
+	Concurrency        *int `json:"concurrency"`
+	MaxRepos           *int `json:"maxRepos"`
+	MaxForkRepos       *int `json:"maxForkRepos"`
+	MaxConcurrentRepos *int `json:"maxConcurrentRepos"`
 }
 
 // SettingsStore is a thread-safe, disk-backed Settings holder.
@@ -89,6 +94,9 @@ func (st *SettingsStore) Update(p SettingsPatch) Settings {
 	}
 	if p.MaxForkRepos != nil && *p.MaxForkRepos >= 0 {
 		st.s.MaxForkRepos = *p.MaxForkRepos
+	}
+	if p.MaxConcurrentRepos != nil && *p.MaxConcurrentRepos > 0 {
+		st.s.MaxConcurrentRepos = *p.MaxConcurrentRepos
 	}
 	_ = st.persist()
 	return st.s

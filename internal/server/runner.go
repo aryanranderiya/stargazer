@@ -28,10 +28,10 @@ type Runner struct {
 	recent   *RecentStore
 	gh       *gh.Client
 
-	mu      sync.Mutex
-	running bool
-	last    *RunReport
-	seq     int
+	mu       sync.Mutex
+	inflight map[string]bool // repos currently being scraped (per-repo lock)
+	last     *RunReport
+	seq      int
 }
 
 // RepoReport is the per-repo outcome of a run.
@@ -62,29 +62,73 @@ func NewRunner(cfg Config, q *repoqueue.Queue, p *pusher.Client, settings *Setti
 		repos:    repos,
 		recent:   recent,
 		gh:       gh.NewClient(cfg.Tokens, 100*time.Millisecond),
+		inflight: map[string]bool{},
 	}
 }
 
-// Run scrapes and pushes a set of repos. With an empty override it pops the
-// next ReposPerRun repos from the queue (advancing the cursor); with an
-// override it scrapes exactly those repos without touching the cursor.
-func (r *Runner) Run(trigger string, override []scraper.RepoTarget) (*RunReport, error) {
+// claim marks a repo in-flight; returns false if it's already being scraped, so
+// the same repo never runs twice at once (different repos run concurrently).
+func (r *Runner) claim(name string) bool {
 	r.mu.Lock()
-	if r.running {
-		r.mu.Unlock()
-		return nil, fmt.Errorf("a scrape run is already in progress")
+	defer r.mu.Unlock()
+	if r.inflight[name] {
+		return false
 	}
-	r.running = true
+	r.inflight[name] = true
 	r.seq++
+	return true
+}
+
+func (r *Runner) release(name string) {
+	r.mu.Lock()
+	delete(r.inflight, name)
+	r.mu.Unlock()
+}
+
+// InFlight returns the set of repos currently being scraped.
+func (r *Runner) InFlight() map[string]bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m := make(map[string]bool, len(r.inflight))
+	for k := range r.inflight {
+		m[k] = true
+	}
+	return m
+}
+
+// ScrapeRepo scrapes+pushes ONE repo's batch. Safe to call concurrently for
+// DIFFERENT repos (they share the token pool, which round-robins + throttles
+// per token); the same repo is skipped if already in flight (ok=false). Each
+// finished batch is folded into stats + the per-repo store, and the delay is
+// auto-tuned from the shared rate-limit budget.
+func (r *Runner) ScrapeRepo(trigger string, t scraper.RepoTarget) (RepoReport, bool) {
+	name := t.Owner + "/" + t.Repo
+	if !r.claim(name) {
+		return RepoReport{Repo: name}, false
+	}
+	defer r.release(name)
+
+	set := r.settings.Get()
+	started := time.Now()
+	r.mu.Lock()
 	seq := r.seq
 	r.mu.Unlock()
+	// Unique per-repo run dir so concurrent repos never collide on CSV paths.
+	safe := strings.NewReplacer("/", "-").Replace(name)
+	runDir := filepath.Join(r.cfg.OutputDir, fmt.Sprintf("run-%s-%d-%d", safe, started.Unix(), seq))
+	defer os.RemoveAll(runDir)
 
-	defer func() {
-		r.mu.Lock()
-		r.running = false
-		r.mu.Unlock()
-	}()
+	rep := r.scrapeAndPush(runDir, t, set)
+	report := &RunReport{StartedAt: started, FinishedAt: time.Now(), Trigger: trigger, Repos: []RepoReport{rep}}
+	r.store(report)
+	r.stats.Record(report)
+	return rep, true
+}
 
+// Run scrapes a set of repos (manual trigger / override). With an empty override
+// it pops the next ReposPerRun from the queue. Each repo goes through ScrapeRepo
+// (per-repo locked, individually recorded); this aggregates them for the caller.
+func (r *Runner) Run(trigger string, override []scraper.RepoTarget) (*RunReport, error) {
 	set := r.settings.Get()
 	report := &RunReport{StartedAt: time.Now(), Trigger: trigger}
 
@@ -94,26 +138,16 @@ func (r *Runner) Run(trigger string, override []scraper.RepoTarget) (*RunReport,
 		if err != nil {
 			report.Error = err.Error()
 			report.FinishedAt = time.Now()
-			r.store(report)
-			r.stats.Record(report)
 			return report, err
 		}
 		targets = next
 	}
-
-	// Scrape each run into a unique dir so the scraper never appends "_1" to a
-	// pre-existing CSV (which would make the output path nondeterministic).
-	runDir := filepath.Join(r.cfg.OutputDir, fmt.Sprintf("run-%d-%d", report.StartedAt.Unix(), seq))
-	defer os.RemoveAll(runDir) // CSVs already pushed; keep the volume tidy
-
 	for _, t := range targets {
-		report.Repos = append(report.Repos, r.scrapeAndPush(runDir, t, set))
+		if rep, ok := r.ScrapeRepo(trigger, t); ok {
+			report.Repos = append(report.Repos, rep)
+		}
 	}
-
 	report.FinishedAt = time.Now()
-	r.store(report)
-	r.stats.Record(report)
-	log.Printf("run done (trigger=%s, repos=%d, took=%s)", trigger, len(report.Repos), report.FinishedAt.Sub(report.StartedAt).Truncate(time.Second))
 	return report, nil
 }
 
@@ -318,9 +352,9 @@ func (r *Runner) RateLimits() []gh.RateLimitStatus {
 	return r.gh.ProbeAllTokens()
 }
 
-// Running reports whether a run is currently in progress.
+// Running reports whether any repo is currently being scraped.
 func (r *Runner) Running() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.running
+	return len(r.inflight) > 0
 }

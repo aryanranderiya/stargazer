@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"stargazer/internal/repoqueue"
@@ -41,8 +42,12 @@ func workerLoop(ctx context.Context, runner *Runner, settings *SettingsStore, qu
 			}
 			continue
 		}
-		repo, ok := nextWithWork(targets, repos)
-		if !ok {
+		n := settings.Get().MaxConcurrentRepos
+		if n < 1 {
+			n = 1
+		}
+		picks := pickRepos(targets, repos, runner.InFlight(), n)
+		if len(picks) == 0 {
 			if !announcedIdle {
 				log.Printf("worker: queue fully walked — idling until new repos are added")
 				announcedIdle = true
@@ -53,17 +58,31 @@ func workerLoop(ctx context.Context, runner *Runner, settings *SettingsStore, qu
 			continue
 		}
 		announcedIdle = false
-		report, err := runner.Run("auto", []scraper.RepoTarget{repo})
-		if err != nil {
-			log.Printf("worker: run error for %s/%s: %v", repo.Owner, repo.Repo, err)
-			if !sleep(ctx, 5*time.Second) {
-				return
-			}
-			continue
+
+		// Scrape the picked repos concurrently — they share the token pool, which
+		// round-robins + throttles per token, so several repos in flight fill the
+		// budget a single sequential repo can't. Each repo is independently locked,
+		// recorded, and auto-tuned.
+		var wg sync.WaitGroup
+		var rlMu sync.Mutex
+		rateLimited := false
+		for _, t := range picks {
+			wg.Add(1)
+			go func(t scraper.RepoTarget) {
+				defer wg.Done()
+				rep, ok := runner.ScrapeRepo("auto", t)
+				if ok && strings.Contains(strings.ToLower(rep.Error), "rate limit") {
+					rlMu.Lock()
+					rateLimited = true
+					rlMu.Unlock()
+				}
+			}(t)
 		}
+		wg.Wait()
+
 		// Cool down hard when GitHub throttled us; otherwise a gentle gap.
 		gap := 3 * time.Second
-		if rateLimitedReport(report) {
+		if rateLimited {
 			gap = 2 * time.Minute
 			log.Printf("worker: rate-limited — cooling down %s before the next pass", gap)
 		}
@@ -73,31 +92,25 @@ func workerLoop(ctx context.Context, runner *Runner, settings *SettingsStore, qu
 	}
 }
 
-func rateLimitedReport(rep *RunReport) bool {
-	if rep == nil {
-		return false
-	}
-	for _, r := range rep.Repos {
-		if strings.Contains(strings.ToLower(r.Error), "rate limit") {
-			return true
-		}
-	}
-	return false
-}
-
-// nextWithWork returns the FIRST repo in queue order that still has stargazers
-// left to walk — so a repo is fully exhausted before the next one is touched
-// (strictly sequential, one repo at a time). Completion is decided by the Done
-// flag, which the GraphQL stream sets when it reaches the last page — NOT the
+// pickRepos returns up to n repos in queue order that still have stargazers left
+// to walk and aren't already being scraped. Completion is decided by the Done
+// flag (set when the GraphQL stream reaches the last page), NOT the
 // processed-vs-total estimate (GitHub's total can differ from what the walk
-// yields, which would otherwise wedge a repo or stop it early).
-func nextWithWork(targets []scraper.RepoTarget, repos *RepoStore) (scraper.RepoTarget, bool) {
+// yields, which would otherwise wedge a repo or stop it early). Repos earlier in
+// the queue are still preferred, but several walk at once to fill the budget.
+func pickRepos(targets []scraper.RepoTarget, repos *RepoStore, inflight map[string]bool, n int) []scraper.RepoTarget {
+	var out []scraper.RepoTarget
 	for _, t := range targets {
-		if !repos.IsDone(t.Owner + "/" + t.Repo) {
-			return t, true
+		name := t.Owner + "/" + t.Repo
+		if repos.IsDone(name) || inflight[name] {
+			continue
+		}
+		out = append(out, t)
+		if len(out) >= n {
+			break
 		}
 	}
-	return scraper.RepoTarget{}, false
+	return out
 }
 
 // sleep waits d or returns false if ctx is cancelled first.
