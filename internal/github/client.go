@@ -506,6 +506,110 @@ func (c *Client) StreamStargazers(owner, repo string, maxCount int, concurrency 
 	return out
 }
 
+// StargazerStreamResult is sent exactly once when a GraphQL stargazer stream
+// finishes: the cursor to resume from next run, whether the repo is fully walked
+// (no more pages), and any fatal fetch error.
+type StargazerStreamResult struct {
+	LastCursor string
+	Exhausted  bool
+	Err        error
+}
+
+type gqlStargazerPage struct {
+	Repository struct {
+		Stargazers struct {
+			PageInfo struct {
+				EndCursor   string `json:"endCursor"`
+				HasNextPage bool   `json:"hasNextPage"`
+			} `json:"pageInfo"`
+			Edges []struct {
+				Cursor    string `json:"cursor"`
+				StarredAt string `json:"starredAt"`
+				Node      struct {
+					Login      string `json:"login"`
+					DatabaseID int64  `json:"databaseId"`
+				} `json:"node"`
+			} `json:"edges"`
+		} `json:"stargazers"`
+	} `json:"repository"`
+}
+
+func (c *Client) fetchStargazerPageGraphQL(owner, repo, cursor string) (*gqlStargazerPage, error) {
+	after := "null"
+	if cursor != "" {
+		after = fmt.Sprintf("%q", cursor)
+	}
+	// orderBy STARRED_AT ASC gives a stable order (oldest first) so cursors —
+	// and the legacy REST page offset we fast-forward past — stay consistent
+	// across runs.
+	query := fmt.Sprintf(`query { repository(owner: %q, name: %q) { stargazers(first: 100, after: %s, orderBy: {field: STARRED_AT, direction: ASC}) { pageInfo { endCursor hasNextPage } edges { cursor starredAt node { login databaseId } } } } }`, owner, repo, after)
+	var data gqlStargazerPage
+	if err := c.graphql(query, &data); err != nil {
+		return nil, err
+	}
+	return &data, nil
+}
+
+// StreamStargazersGraphQL lists a repo's stargazers via the GraphQL API, which —
+// unlike the REST endpoint (hard-capped at 40,000 / page 400) — has no
+// pagination ceiling, so it can walk repos of any size. It resumes from
+// startCursor; if startCursor is empty but skip>0 (a repo previously walked via
+// the REST page model), it fast-forwards past `skip` entries first to derive the
+// cursor without reprocessing them. It emits up to maxCount entries (0 = until
+// exhausted), then reports the resume cursor + whether the repo is fully walked
+// on the returned result channel (sent once).
+func (c *Client) StreamStargazersGraphQL(owner, repo string, maxCount, skip int, startCursor string, onPage func(int)) (<-chan StarEntry, <-chan StargazerStreamResult) {
+	out := make(chan StarEntry, 200)
+	resCh := make(chan StargazerStreamResult, 1)
+
+	go func() {
+		defer close(out)
+		cursor := startCursor
+		lastCursor := startCursor
+		sent, skipped := 0, 0
+
+		for {
+			page, err := c.fetchStargazerPageGraphQL(owner, repo, cursor)
+			if err != nil {
+				resCh <- StargazerStreamResult{LastCursor: lastCursor, Err: fmt.Errorf("fetching stargazers: %w", err)}
+				return
+			}
+			edges := page.Repository.Stargazers.Edges
+			if len(edges) == 0 {
+				resCh <- StargazerStreamResult{LastCursor: lastCursor, Exhausted: true}
+				return
+			}
+			for _, e := range edges {
+				cursor = e.Cursor
+				lastCursor = e.Cursor
+				if skip > 0 && skipped < skip {
+					skipped++
+					continue
+				}
+				out <- StarEntry{StarredAt: e.StarredAt, User: User{Login: e.Node.Login, ID: e.Node.DatabaseID}}
+				sent++
+				if maxCount > 0 && sent >= maxCount {
+					if onPage != nil {
+						onPage(sent)
+					}
+					resCh <- StargazerStreamResult{LastCursor: lastCursor, Exhausted: false}
+					return
+				}
+			}
+			if onPage != nil {
+				onPage(sent)
+			}
+			if !page.Repository.Stargazers.PageInfo.HasNextPage {
+				resCh <- StargazerStreamResult{LastCursor: lastCursor, Exhausted: true}
+				return
+			}
+			cursor = page.Repository.Stargazers.PageInfo.EndCursor
+		}
+	}()
+
+	return out, resCh
+}
+
 // GetUser fetches a full user profile.
 func (c *Client) GetUser(login string) (*User, error) {
 	url := fmt.Sprintf("%s/users/%s", apiBase, login)

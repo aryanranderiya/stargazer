@@ -87,12 +87,13 @@ func rateLimitedReport(rep *RunReport) bool {
 
 // nextWithWork returns the FIRST repo in queue order that still has stargazers
 // left to walk — so a repo is fully exhausted before the next one is touched
-// (strictly sequential, one repo at a time). A repo with an unknown total (-1)
-// is considered to have work (its total is fetched on the first scrape).
+// (strictly sequential, one repo at a time). Completion is decided by the Done
+// flag, which the GraphQL stream sets when it reaches the last page — NOT the
+// processed-vs-total estimate (GitHub's total can differ from what the walk
+// yields, which would otherwise wedge a repo or stop it early).
 func nextWithWork(targets []scraper.RepoTarget, repos *RepoStore) (scraper.RepoTarget, bool) {
 	for _, t := range targets {
-		processed, total := repos.Progress(t.Owner + "/" + t.Repo)
-		if total < 0 || processed < total {
+		if !repos.IsDone(t.Owner + "/" + t.Repo) {
 			return t, true
 		}
 	}

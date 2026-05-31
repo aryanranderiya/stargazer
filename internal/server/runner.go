@@ -127,8 +127,11 @@ func (r *Runner) scrapeAndPush(runDir string, t scraper.RepoTarget, set Settings
 			r.repos.SetTotal(name, total)
 		}
 	}
-	// Resume deeper into the repo each run instead of re-scraping the top.
+	// Resume deeper into the repo each run. Prefer the GraphQL cursor; the
+	// integer offset is only a one-time fast-forward fallback for repos last
+	// walked under the old REST page model (cursor still empty).
 	offset := r.repos.Offset(name)
+	cursor := r.repos.Cursor(name)
 
 	cfg := scraper.Config{
 		Repos:        []scraper.RepoTarget{t},
@@ -139,6 +142,7 @@ func (r *Runner) scrapeAndPush(runDir string, t scraper.RepoTarget, set Settings
 		MaxForkRepos: set.MaxForkRepos,
 		MaxStars:     set.MaxStars,
 		StartOffset:  offset,
+		StartCursor:  cursor,
 		Delay:        time.Duration(set.DelayMs) * time.Millisecond,
 		UseSearchAPI: r.cfg.UseSearchAPI,
 		CachePath:    r.cfg.CachePath,
@@ -150,6 +154,8 @@ func (r *Runner) scrapeAndPush(runDir string, t scraper.RepoTarget, set Settings
 	done := make(chan struct{})
 	var scrapeErr error
 	var count, failed int
+	var finalCursor string
+	var finalExhausted bool
 	go func() {
 		defer close(done)
 		for p := range progressCh {
@@ -158,6 +164,8 @@ func (r *Runner) scrapeAndPush(runDir string, t scraper.RepoTarget, set Settings
 			}
 			if p.Done {
 				count = p.Count
+				finalCursor = p.Cursor
+				finalExhausted = p.Exhausted
 			}
 			// Stream each processed stargazer into the live Contacts view.
 			if p.Result != nil && r.recent != nil {
@@ -198,7 +206,7 @@ func (r *Runner) scrapeAndPush(runDir string, t scraper.RepoTarget, set Settings
 		rep.Error += "push: " + perr.Error()
 	}
 
-	r.repos.RecordRun(name, count, stats.Imported, rep.Error, time.Now())
+	r.repos.RecordRun(name, count, stats.Imported, rep.Error, time.Now(), finalCursor, finalExhausted)
 	rateLimited := scrapeErr != nil && strings.Contains(strings.ToLower(scrapeErr.Error()), "rate limit")
 	r.autoTune(count, failed, rateLimited)
 

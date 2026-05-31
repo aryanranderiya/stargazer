@@ -29,7 +29,8 @@ type Config struct {
 	MaxRepos     int // max own (non-fork) repos to scan per user
 	MaxForkRepos int // max forked repos to scan per user
 	MaxStars     int // max stargazers to scrape this run (0 = all from the offset onward)
-	StartOffset  int // stargazers to skip before scraping (deep-walk resume point)
+	StartOffset  int // legacy REST page offset; only used to fast-forward when StartCursor is empty
+	StartCursor  string // GraphQL stargazer cursor to resume from (preferred resume point)
 	Delay        time.Duration
 	UseSearchAPI bool   // use the GitHub commit search API as a last resort
 	CachePath    string // path for on-disk user profile cache; defaults to $XDG_CONFIG/stargazer/user_cache.json
@@ -79,6 +80,8 @@ type Progress struct {
 	// Populated only when Done=true.
 	OutputPath string
 	Count      int
+	Cursor     string // GraphQL stargazer cursor reached this run (resume point)
+	Exhausted  bool   // true when the repo has no more stargazers to walk
 
 	// Multi-repo tracking: which repo is currently being processed.
 	RepoName  string // "owner/repo"
@@ -144,7 +147,7 @@ func Run(cfg Config, progressCh chan<- Progress) {
 			RepoTotal: totalRepos,
 		})
 
-		count, repoOutputPath, err := runRepo(client, cfg, repo, outputPath, userCache, progressCh, ri, totalRepos)
+		count, repoOutputPath, cursor, exhausted, err := runRepo(client, cfg, repo, outputPath, userCache, progressCh, ri, totalRepos)
 		if err != nil {
 			send(progressCh, Progress{
 				Done:      true,
@@ -152,6 +155,8 @@ func Run(cfg Config, progressCh chan<- Progress) {
 				RepoName:  repoName,
 				RepoIndex: ri,
 				RepoTotal: totalRepos,
+				Count:     count, // partial progress before the error
+				Cursor:    cursor, // persist however far we got before the error
 			})
 			return
 		}
@@ -165,6 +170,8 @@ func Run(cfg Config, progressCh chan<- Progress) {
 				RepoName:   repoName,
 				RepoIndex:  ri,
 				RepoTotal:  totalRepos,
+				Cursor:     cursor,
+				Exhausted:  exhausted,
 			})
 		}
 	}
@@ -173,42 +180,53 @@ func Run(cfg Config, progressCh chan<- Progress) {
 	_ = userCache.Save()
 }
 
-// runRepo scrapes a single repo and writes results to outputPath.
-// Returns the count of results, the resolved output path, and any error.
-func runRepo(client *gh.Client, cfg Config, repo RepoTarget, outputPath string, userCache *cache.Cache, progressCh chan<- Progress, repoIdx, repoTotal int) (int, string, error) {
+// runRepo scrapes a single repo and writes results to outputPath. Returns the
+// count of results, the resolved output path, the stargazer cursor reached (to
+// resume from next run), whether the repo is fully walked, and any error.
+func runRepo(client *gh.Client, cfg Config, repo RepoTarget, outputPath string, userCache *cache.Cache, progressCh chan<- Progress, repoIdx, repoTotal int) (int, string, string, bool, error) {
 	repoName := repo.Owner + "/" + repo.Repo
 
 	dir := filepath.Dir(outputPath)
 	if dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return 0, "", fmt.Errorf("creating output directory: %w", err)
+			return 0, "", "", false, fmt.Errorf("creating output directory: %w", err)
 		}
 	}
 
 	resolved := resolveOutputPath(outputPath)
 	f, err := os.Create(resolved)
 	if err != nil {
-		return 0, "", fmt.Errorf("creating output file: %w", err)
+		return 0, "", "", false, fmt.Errorf("creating output file: %w", err)
 	}
 	defer f.Close()
 
 	csvWriter := csv.NewWriter(f)
 	if err := csvWriter.Write(csvHeaders); err != nil {
-		return 0, "", fmt.Errorf("writing CSV headers: %w", err)
+		return 0, "", "", false, fmt.Errorf("writing CSV headers: %w", err)
 	}
 	var csvMu sync.Mutex
 
-	fetchErrCh := make(chan error, 1)
-	startPage := cfg.StartOffset/100 + 1
-	starCh := client.StreamStargazers(repo.Owner, repo.Repo, cfg.MaxStars, cfg.Concurrency, startPage, func(fetched int) {
+	// Resume by cursor when we have one; otherwise fast-forward past the legacy
+	// REST page offset (one-time, validated to land at the same place).
+	skip := 0
+	if cfg.StartCursor == "" {
+		skip = cfg.StartOffset
+	}
+	var finalCursor string = cfg.StartCursor
+	var exhausted bool
+	starCh, resCh := client.StreamStargazersGraphQL(repo.Owner, repo.Repo, cfg.MaxStars, skip, cfg.StartCursor, func(fetched int) {
+		status := fmt.Sprintf("[%s] Fetched %d stargazers...", repoName, fetched)
+		if skip > 0 && fetched == 0 {
+			status = fmt.Sprintf("[%s] Fast-forwarding to resume point (offset %d)...", repoName, cfg.StartOffset)
+		}
 		send(progressCh, Progress{
 			Stage:     "fetching",
-			Status:    fmt.Sprintf("[%s] Fetched %d stargazers...", repoName, fetched),
+			Status:    status,
 			RepoName:  repoName,
 			RepoIndex: repoIdx,
 			RepoTotal: repoTotal,
 		})
-	}, fetchErrCh)
+	})
 
 	const profileBatchSize = 20
 
@@ -341,18 +359,14 @@ func runRepo(client *gh.Client, cfg Config, repo RepoTarget, outputPath string, 
 		}
 		dispatchPrefetched(pending)
 
-		// StreamStargazers only sends on errCh for a fatal fetch error with no
-		// stargazers retrieved; on success or a maxCount early-stop it sends
-		// nothing. Any error is buffered before its out channel closes, so it
-		// is already available here — a non-blocking receive avoids deadlocking
-		// on the (common) no-error and capped paths.
-		var fetchErr error
-		select {
-		case fetchErr = <-fetchErrCh:
-		default:
-		}
-		if fetchErr != nil && total == 0 {
-			producerErr = fetchErr
+		// The GraphQL stargazer stream reports its final state exactly once,
+		// buffered and sent before its channel closes, so it's ready now without
+		// blocking. Capture the resume cursor + exhausted flag regardless of error.
+		res := <-resCh
+		finalCursor = res.LastCursor
+		exhausted = res.Exhausted
+		if res.Err != nil && total == 0 {
+			producerErr = res.Err
 			close(workCh)
 			wg.Wait()
 			close(resultCh)
@@ -417,10 +431,10 @@ func runRepo(client *gh.Client, cfg Config, repo RepoTarget, outputPath string, 
 	csvMu.Unlock()
 
 	if producerErr != nil {
-		return 0, "", producerErr
+		return count, resolved, finalCursor, exhausted, producerErr
 	}
 
-	return count, resolved, nil
+	return count, resolved, finalCursor, exhausted, nil
 }
 
 // processUser enriches a single stargazer entry with profile + email data.

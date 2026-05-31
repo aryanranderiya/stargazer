@@ -17,6 +17,8 @@ type RepoProgress struct {
 	Processed  int       `json:"processed"`  // stargazers walked so far (deep-walk offset)
 	Scraped    int       `json:"scraped"`    // cumulative scraped
 	Imported   int       `json:"imported"`   // cumulative imported into the email list
+	Cursor     string    `json:"cursor,omitempty"` // GraphQL stargazer resume cursor
+	Done       bool      `json:"done,omitempty"`   // fully walked (no more stargazers)
 	LastRunAt  time.Time `json:"lastRunAt,omitempty"`
 	LastError  string    `json:"lastError,omitempty"`
 }
@@ -61,6 +63,26 @@ func (s *RepoStore) Offset(repo string) int {
 	return 0
 }
 
+// Cursor returns the GraphQL stargazer resume cursor for repo (empty if none).
+func (s *RepoStore) Cursor(repo string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p := s.m[repo]; p != nil {
+		return p.Cursor
+	}
+	return ""
+}
+
+// IsDone reports whether repo has been fully walked (no more stargazers).
+func (s *RepoStore) IsDone(repo string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p := s.m[repo]; p != nil {
+		return p.Done
+	}
+	return false
+}
+
 // Progress returns (processed, total) for repo; total is -1 when unknown.
 func (s *RepoStore) Progress(repo string) (processed, total int) {
 	s.mu.Lock()
@@ -87,14 +109,21 @@ func (s *RepoStore) SetTotal(repo string, total int) {
 	_ = s.persistLocked()
 }
 
-// RecordRun folds a finished repo run into its progress.
-func (s *RepoStore) RecordRun(repo string, scraped, imported int, errStr string, at time.Time) {
+// RecordRun folds a finished repo run into its progress. cursor is the GraphQL
+// resume point reached this run; exhausted marks the repo fully walked.
+func (s *RepoStore) RecordRun(repo string, scraped, imported int, errStr string, at time.Time, cursor string, exhausted bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p := s.entry(repo)
 	p.Processed += scraped
 	p.Scraped += scraped
 	p.Imported += imported
+	if cursor != "" {
+		p.Cursor = cursor
+	}
+	if exhausted {
+		p.Done = true // sticky: once fully walked, stop re-running it
+	}
 	p.LastRunAt = at
 	p.LastError = errStr
 	_ = s.persistLocked()
