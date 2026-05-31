@@ -155,6 +155,13 @@
     </div>
   </section>
 
+  <section style="margin-top:10px">
+    <div class="card">
+      <div class="h"><h2>Token utilization</h2><span class="hint" id="rl-hint">share of each GitHub token's hourly budget used — REST core &amp; GraphQL points</span></div>
+      <div id="rl-body" style="display:flex;flex-direction:column;gap:11px;margin-top:8px"></div>
+    </div>
+  </section>
+
   <section style="margin-top:14px">
     <div class="card info-card">
       <span style="font-size:15px;line-height:1.3">💡</span>
@@ -264,10 +271,22 @@ function computeRate(h){
   return sec>2?s/sec:0;
 }
 
+function rlBar(label,used,limit,resetIn){
+  const pct=limit>0?Math.min(100,Math.round(used/limit*100)):0;
+  const col=pct>85?"#e5484d":pct>50?"#d9a300":"var(--blue)";
+  const rm=resetIn>0?` · resets ${Math.round(resetIn/60)}m`:"";
+  return `<div style="flex:1"><div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--muted)"><span>${label}</span><span>${used.toLocaleString()} / ${limit.toLocaleString()} · ${pct}%${rm}</span></div><div style="height:7px;border-radius:6px;background:rgba(128,128,128,.16);overflow:hidden;margin-top:3px"><div style="height:100%;width:${pct}%;background:${col};transition:width .4s"></div></div></div>`;
+}
+function renderRL(d){
+  const rows=(d&&d.tokens)||[];
+  if(!rows.length){$("rl-body").innerHTML='<div class="empty">no token data</div>';return;}
+  $("rl-body").innerHTML=rows.map((t,i)=>`<div style="display:flex;gap:14px;align-items:center"><div style="width:74px;font-size:12px;color:var(--faint);font-family:ui-monospace,monospace">${esc(t.token||("token "+(i+1)))}</div>${rlBar("REST",t.core.used,t.core.limit,t.core.resetIn)}${rlBar("GraphQL",t.graphql.used,t.graphql.limit,t.graphql.resetIn)}</div>`).join("");
+}
 async function refresh(){
-  let d,h,cc;
-  try{[d,h,cc]=await Promise.all([api("/api/status").then(r=>r.json()),api("/api/history").then(r=>r.json()),api("/api/contacts?limit=1").then(r=>r.json())]);}
+  let d,h,cc,rl;
+  try{[d,h,cc,rl]=await Promise.all([api("/api/status").then(r=>r.json()),api("/api/history").then(r=>r.json()),api("/api/contacts?limit=1").then(r=>r.json()),api("/api/ratelimits").then(r=>r.json()).catch(()=>null)]);}
   catch(e){$("foot").textContent="⚠ cannot reach server";return;}
+  renderRL(rl);
   lastHistory=h||[]; rate=computeRate(lastHistory);
   const t=d.totals||{},q=d.queue||{},s=d.settings||{},repos=d.repos||[];
   const allDone=repos.length>0&&repos.every(r=>r.totalStars>0&&r.processed>=r.totalStars);

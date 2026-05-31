@@ -4,13 +4,16 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	gh "stargazer/internal/github"
 	"stargazer/internal/repoqueue"
 	"stargazer/internal/repos"
 	"stargazer/internal/scraper"
@@ -30,6 +33,12 @@ type Server struct {
 	recent   *RecentStore
 	audience *atomic.Int64
 	http     *http.Server
+
+	// Cached rate-limit probe (refreshed at most every rlTTL) so the dashboard
+	// polling /api/ratelimits doesn't hit GitHub's /rate_limit on every tick.
+	rlMu    sync.Mutex
+	rlCache []gh.RateLimitStatus
+	rlAt    time.Time
 }
 
 // New builds the HTTP server and routes.
@@ -44,6 +53,7 @@ func New(cfg Config, q *repoqueue.Queue, runner *Runner, settings *SettingsStore
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/scrape", s.handleScrape)
 	mux.HandleFunc("/api/queue", s.handleQueue)
+	mux.HandleFunc("/api/ratelimits", s.handleRateLimits)
 	s.http = &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           mux,
@@ -103,6 +113,48 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		"timezone":  time.Now().Format("MST"),
 		"serverNow": time.Now(),
 	})
+}
+
+// handleRateLimits reports per-token rate-limit utilization (REST core + GraphQL),
+// so the dashboard can show how much of each token's budget we're actually using.
+// Cached for rlTTL to avoid probing GitHub on every poll.
+func (s *Server) handleRateLimits(w http.ResponseWriter, _ *http.Request) {
+	const rlTTL = 15 * time.Second
+	s.rlMu.Lock()
+	if time.Since(s.rlAt) > rlTTL || s.rlCache == nil {
+		s.rlCache = s.runner.RateLimits()
+		s.rlAt = time.Now()
+	}
+	statuses := s.rlCache
+	s.rlMu.Unlock()
+
+	type pool struct {
+		Used      int   `json:"used"`
+		Limit     int   `json:"limit"`
+		Remaining int   `json:"remaining"`
+		ResetIn   int   `json:"resetIn"` // seconds until reset
+	}
+	type tokenRL struct {
+		Token   string `json:"token"`
+		Core    pool   `json:"core"`
+		GraphQL pool   `json:"graphql"`
+	}
+	mk := func(r gh.RateLimitResource) pool {
+		ri := int(time.Until(r.Reset).Seconds())
+		if ri < 0 {
+			ri = 0
+		}
+		return pool{Used: r.Limit - r.Remaining, Limit: r.Limit, Remaining: r.Remaining, ResetIn: ri}
+	}
+	out := make([]tokenRL, 0, len(statuses))
+	for i, st := range statuses {
+		tok := st.Token
+		if tok == "" {
+			tok = fmt.Sprintf("token-%d", i+1)
+		}
+		out = append(out, tokenRL{Token: tok, Core: mk(st.Core), GraphQL: mk(st.GraphQL)})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tokens": out, "cachedAt": s.rlAt})
 }
 
 func (s *Server) handleHistory(w http.ResponseWriter, _ *http.Request) {

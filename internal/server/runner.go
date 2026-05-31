@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -232,24 +233,37 @@ func (r *Runner) autoTune(_ int, _ int, _ bool) {
 	if len(statuses) == 0 {
 		return
 	}
-	remaining := 0
-	var soonest time.Time
+	// Pace by the BINDING pool. Almost all work is now GraphQL (profiles, emails,
+	// stargazer listing); REST core only sees rare fallbacks. Tuning on core alone
+	// (the old behaviour) optimised the idle pool and ignored the one actually
+	// being spent. Compute the even-spend delay for BOTH pools and take the larger
+	// (tighter) one, so we never exhaust either: delay = N * secondsToReset /
+	// remaining * 1000. The per-token throttle then enforces it across N tokens.
+	poolDelay := func(remaining int, reset time.Time) float64 {
+		horizon := time.Until(reset).Seconds()
+		if horizon < 60 {
+			horizon = 60
+		}
+		if remaining < 1 {
+			remaining = 1
+		}
+		return float64(len(statuses)) * horizon / float64(remaining) * 1000.0
+	}
+	core, gql := 0, 0
+	var coreReset, gqlReset time.Time
 	for _, s := range statuses {
-		remaining += s.Core.Remaining
-		if soonest.IsZero() || s.Core.Reset.Before(soonest) {
-			soonest = s.Core.Reset
+		core += s.Core.Remaining
+		gql += s.GraphQL.Remaining
+		if coreReset.IsZero() || s.Core.Reset.Before(coreReset) {
+			coreReset = s.Core.Reset
+		}
+		if gqlReset.IsZero() || s.GraphQL.Reset.Before(gqlReset) {
+			gqlReset = s.GraphQL.Reset
 		}
 	}
-	horizon := time.Until(soonest).Seconds()
-	if horizon < 60 {
-		horizon = 60
-	}
-	if remaining < 1 {
-		remaining = 1
-	}
-	next := int(float64(len(statuses)) * horizon / float64(remaining) * 1000.0)
-	if next < 100 {
-		next = 100
+	next := int(math.Max(poolDelay(core, coreReset), poolDelay(gql, gqlReset)))
+	if next < 25 { // floor: budget is ample, so let concurrency be the governor
+		next = 25
 	}
 	if next > 5000 {
 		next = 5000
@@ -257,7 +271,7 @@ func (r *Runner) autoTune(_ int, _ int, _ bool) {
 	cur := r.settings.Get().DelayMs
 	if next != cur {
 		r.settings.Update(SettingsPatch{DelayMs: &next})
-		log.Printf("auto-tune: core %d remaining, reset ~%.0fs → delay %dms→%dms", remaining, horizon, cur, next)
+		log.Printf("auto-tune: core %d / graphql %d remaining → delay %dms→%dms", core, gql, cur, next)
 	}
 }
 
@@ -293,6 +307,12 @@ func (r *Runner) RefreshTotals(targets []scraper.RepoTarget) {
 			}
 		}
 	}
+}
+
+// RateLimits probes every token's current rate-limit state (REST core + GraphQL
+// + search). The /rate_limit endpoint is free (doesn't consume budget).
+func (r *Runner) RateLimits() []gh.RateLimitStatus {
+	return r.gh.ProbeAllTokens()
 }
 
 // Running reports whether a run is currently in progress.

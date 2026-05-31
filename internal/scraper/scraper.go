@@ -228,10 +228,22 @@ func runRepo(client *gh.Client, cfg Config, repo RepoTarget, outputPath string, 
 		})
 	})
 
-	const profileBatchSize = 20
+	// One prefetch batch = profileBatchSize logins, fetched as concurrent GraphQL
+	// chunks (GetUsersBatch parallelises internally, ~10 logins/chunk). Size it to
+	// ONE chunk-round across all tokens — N tokens × 10 — so a batch resolves in
+	// ~a single GraphQL round-trip regardless of token count; add tokens and the
+	// batch (and prefetch throughput) scales automatically. Clamped for sanity.
+	const graphqlChunkSize = 10 // mirrors GetUsersBatch's chunkSize
+	profileBatchSize := len(cfg.Tokens) * graphqlChunkSize
+	if profileBatchSize < 20 {
+		profileBatchSize = 20
+	}
+	if profileBatchSize > 150 {
+		profileBatchSize = 150
+	}
 
-	workCh := make(chan gh.StarEntry, profileBatchSize*2)
-	resultCh := make(chan Result, profileBatchSize*2)
+	workCh := make(chan gh.StarEntry, profileBatchSize*3)
+	resultCh := make(chan Result, profileBatchSize*3)
 
 	var profileMu sync.RWMutex
 	profiles := make(map[string]*gh.User)

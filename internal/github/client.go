@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -264,6 +265,29 @@ func (c *Client) rotateToken() {
 	c.tokenIdx.Add(1)
 }
 
+// secondaryRateLimitWait returns how long to back off for a 403/429 that is a
+// GitHub SECONDARY rate limit (a Retry-After header, or a "secondary rate
+// limit"/"abuse" body message). Returns 0 for a primary limit (token's hourly
+// budget exhausted) so the caller rotates tokens instead of waiting. Capped so a
+// hostile Retry-After can't stall the worker indefinitely.
+func secondaryRateLimitWait(h http.Header, body []byte) time.Duration {
+	const cap = 90 * time.Second
+	if ra := strings.TrimSpace(h.Get("Retry-After")); ra != "" {
+		if secs, err := strconv.Atoi(ra); err == nil && secs >= 0 {
+			d := time.Duration(secs+1) * time.Second
+			if d > cap {
+				d = cap
+			}
+			return d
+		}
+	}
+	msg := strings.ToLower(string(body))
+	if strings.Contains(msg, "secondary rate limit") || strings.Contains(msg, "abuse") {
+		return 30 * time.Second // clearly secondary but no Retry-After — fixed backoff
+	}
+	return 0 // primary limit (or plain 403) — let the caller rotate tokens
+}
+
 func (c *Client) doRequest(url, accept, token string, v interface{}) error {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -292,10 +316,16 @@ func (c *Client) doRequest(url, accept, token string, v interface{}) error {
 		return nil
 	case 401:
 		return fmt.Errorf("unauthorized – check your GitHub token")
-	case 403:
-		return fmt.Errorf("rate limited (403)")
-	case 429:
-		return fmt.Errorf("rate limited (429)")
+	case 403, 429:
+		// Distinguish GitHub's SECONDARY rate limit (Retry-After header / "secondary
+		// rate limit" body — account/IP-wide, so rotating tokens won't help; we MUST
+		// wait) from a PRIMARY limit (this token's hourly budget gone → rotate).
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if wait := secondaryRateLimitWait(resp.Header, body); wait > 0 {
+			time.Sleep(wait)
+			return &retryableError{statusCode: resp.StatusCode, err: fmt.Errorf("secondary rate limit; waited %s", wait.Truncate(time.Second))}
+		}
+		return fmt.Errorf("rate limited (%d)", resp.StatusCode)
 	case 404:
 		return fmt.Errorf("not found (404): %s", url)
 	case 422:
@@ -746,8 +776,14 @@ func (c *Client) graphql(query string, v interface{}) error {
 			}
 
 			if resp.StatusCode == 403 || resp.StatusCode == 429 {
+				rlBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 				resp.Body.Close()
-				// Signal rate-limit to the outer loop via result; not retryable here.
+				// Secondary limit (account/IP-wide): wait it out + retry the same
+				// token. Primary: signal the outer loop to rotate tokens.
+				if wait := secondaryRateLimitWait(resp.Header, rlBody); wait > 0 {
+					time.Sleep(wait)
+					return &retryableError{statusCode: resp.StatusCode, err: fmt.Errorf("secondary rate limit; waited %s", wait.Truncate(time.Second))}
+				}
 				result = fmt.Errorf("rate limited (%d)", resp.StatusCode)
 				return nil // stop retryWithBackoff; outer loop handles rotation
 			}
@@ -862,13 +898,26 @@ func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) (map[strin
 	// what the GraphQL backend serves reliably.
 	const chunkSize = 10
 
-	fetched := 0
-	for start := 0; start < len(logins); start += chunkSize {
-		end := start + chunkSize
-		if end > len(logins) {
-			end = len(logins)
-		}
-		chunk := logins[start:end]
+	// Fetch chunks CONCURRENTLY. The per-token throttle in acquireToken paces the
+	// actual GraphQL call rate (round-robin across tokens), so firing chunks in
+	// parallel fills the token budget instead of serialising one chunk at a time —
+	// the serial prefetch was the real throughput bottleneck, not worker count.
+	// result/reposResult are written under mu; progress is atomic.
+	maxConcurrent := len(c.tokens) * 2
+	if maxConcurrent < 2 {
+		maxConcurrent = 2
+	}
+	if maxConcurrent > 16 {
+		maxConcurrent = 16
+	}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var fetched int64
+	sem := make(chan struct{}, maxConcurrent)
+
+	processChunk := func(chunk []string) {
+		defer wg.Done()
+		defer func() { <-sem }()
 
 		// Build the GraphQL query with aliases u0, u1, ...
 		//
@@ -906,11 +955,11 @@ func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) (map[strin
 			// rejection would otherwise silently degrade every email to a REST
 			// fallback with no visible signal.
 			log.Printf("graphql batch (%d users) failed: %v", len(chunk), err)
+			n := atomic.AddInt64(&fetched, int64(len(chunk)))
 			if onProgress != nil {
-				fetched += len(chunk)
-				onProgress(fetched)
+				onProgress(int(n))
 			}
-			continue
+			return
 		}
 
 		for _, raw := range data {
@@ -933,8 +982,6 @@ func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) (map[strin
 				PublicRepos: gu.Repositories.TotalCount,
 				HTMLURL:     gu.URL,
 			}
-			result[gu.Login] = u
-
 			// Convert repo nodes to []Repo and, while we're walking them, resolve
 			// a real commit author-email from the default-branch history. The user
 			// owns these repos, so recent commits are overwhelmingly theirs; prefer
@@ -942,8 +989,9 @@ func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) (map[strin
 			// real email (a bare git identity, almost always the owner's). This is
 			// the GraphQL email resolver — it does the work the REST own-repo scan
 			// used to, on the idle GraphQL pool, with zero extra requests.
+			var repos []Repo
 			if len(gu.Repositories.Nodes) > 0 {
-				repos := make([]Repo, 0, len(gu.Repositories.Nodes))
+				repos = make([]Repo, 0, len(gu.Repositories.Nodes))
 				for _, node := range gu.Repositories.Nodes {
 					repos = append(repos, Repo{
 						FullName: node.NameWithOwner,
@@ -964,15 +1012,31 @@ func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) (map[strin
 						break
 					}
 				}
+			}
+			mu.Lock()
+			result[gu.Login] = u
+			if repos != nil {
 				reposResult[gu.Login] = repos
 			}
+			mu.Unlock()
 		}
 
-		fetched += len(chunk)
+		n := atomic.AddInt64(&fetched, int64(len(chunk)))
 		if onProgress != nil {
-			onProgress(fetched)
+			onProgress(int(n))
 		}
 	}
+
+	for start := 0; start < len(logins); start += chunkSize {
+		end := start + chunkSize
+		if end > len(logins) {
+			end = len(logins)
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go processChunk(logins[start:end])
+	}
+	wg.Wait()
 	return result, reposResult
 }
 
