@@ -251,24 +251,27 @@ function human(sec){if(!isFinite(sec)||sec<=0)return"—";const d=Math.floor(sec
 function etaDate(sec){if(!isFinite(sec)||sec<=0)return"";const d=new Date(Date.now()+sec*1000);return d.toLocaleDateString(undefined,{month:"short",day:"numeric"})+(sec>86400*0?", "+d.toLocaleTimeString(undefined,{hour:"numeric"})+"":"");}
 async function api(p,o){return fetch(p,Object.assign({cache:"no-store"},o||{}));}
 
-// computeRate returns the current scrape rate (stargazers/sec) over only the
-// most RECENT runs — a fixed 12-minute window. History is newest-first, so we
-// stop at the first run older than the window. Averaging a fixed COUNT of runs
-// (the old behaviour) let a single stale slow run — e.g. an 8-minute run from a
-// past rate-limit/crash episode — drag the displayed rate (and the ETA, which
-// shares it) far below the true current speed.
+// computeRate returns the current combined scrape rate (stargazers/sec) over the
+// most RECENT runs — a fixed 12-minute window (history is newest-first, so we
+// stop at the first run older than the window). It divides total scraped by the
+// WALL-CLOCK SPAN of those runs, NOT the sum of their durations: with repos
+// scraped concurrently, runs overlap in wall-clock time, so summing durations
+// double-counts and understates the true combined rate.
 function computeRate(h){
   const WINDOW=12*60*1000, now=Date.now();
-  let s=0,sec=0;
+  let s=0, latest=0, earliest=Infinity;
   for(const r of (h||[])){
     const fin=new Date(r.finishedAt).getTime();
     if(!isFinite(fin)) continue;
     if(now-fin>WINDOW) break;
+    const st=new Date(r.startedAt).getTime();
+    if(fin>latest) latest=fin;
+    if(isFinite(st)&&st<earliest) earliest=st;
     const reps=r.repos||[];
     s+=reps.reduce((a,x)=>a+(x.scraped||0),0);
-    sec+=Math.max(0,(fin-new Date(r.startedAt).getTime())/1000);
   }
-  return sec>2?s/sec:0;
+  const span=(latest-earliest)/1000;
+  return span>2?s/span:0;
 }
 
 function rlBar(label,used,limit,resetIn){
@@ -310,16 +313,24 @@ async function refresh(){
 
   let activeKey=null;
   for(const r of repos){const dn=r.totalStars>0&&(r.processed||0)>=r.totalStars;if(!dn){activeKey=r.repo;break;}}
-  // Cumulative ETA: the queue is sequential, so each repo only starts after the
-  // ones ahead finish. Accumulate remaining time down the queue.
-  let cum=0; const etaMap={};
+  // Cumulative ETA across N concurrent "lanes": repos scrape maxConcurrentRepos
+  // at a time, sharing the combined rate, so each active repo runs at ~rate/N.
+  // Greedily assign repos (queue order) to the lane that frees up earliest; a
+  // repo's ETA is when its lane finishes it. (N=1 → the old sequential model.)
+  const notDone=repos.filter(r=>!(r.totalStars>0&&(r.processed||0)>=r.totalStars)).length;
+  const laneN=Math.max(1,Math.min(s.maxConcurrentRepos||1,notDone||1));
+  const perRate=rate>0?rate/laneN:0;
+  const lanes=new Array(laneN).fill(0); const etaMap={};
   for(const r of repos){
     const tot=r.totalStars,pr=r.processed||0,kn=tot>0,dn=kn&&pr>=tot;
     if(dn){etaMap[r.repo]={done:true};continue;}
-    if(kn&&rate>0){cum+=Math.max(0,tot-pr)/rate;etaMap[r.repo]={sec:cum};}
-    else etaMap[r.repo]={unknown:true};
+    if(kn&&perRate>0){
+      let li=0; for(let j=1;j<lanes.length;j++){if(lanes[j]<lanes[li])li=j;}
+      lanes[li]+=Math.max(0,tot-pr)/perRate;
+      etaMap[r.repo]={sec:lanes[li]};
+    } else etaMap[r.repo]={unknown:true};
   }
-  $("repos-hint").textContent=repos.length?`${repos.length} in queue · sequential, one fully then the next`:"";
+  $("repos-hint").textContent=repos.length?`${repos.length} in queue · ${laneN>1?laneN+" at a time":"one fully then the next"}`:"";
   if(!repos.length){$("repos").innerHTML=`<div class="card empty">No repositories yet — paste some above.</div>`;}
   else{$("repos").innerHTML=repos.map(r=>{
     const total=r.totalStars,proc=r.processed||0,known=total>0,pct=known?Math.min(100,Math.round(proc/total*100)):0,done=known&&proc>=total;
