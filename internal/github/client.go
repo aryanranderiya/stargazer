@@ -232,7 +232,11 @@ func NewClient(tokens []string, delay time.Duration) *Client {
 func (c *Client) acquireToken() string {
 	idx := 0
 	if len(c.tokens) > 0 {
-		idx = int(c.tokenIdx.Load() % int64(len(c.tokens)))
+		// Round-robin across tokens so the per-call delay throttles each token
+		// independently — N tokens deliver N× the sustained call rate and use
+		// the full combined rate-limit budget, instead of serialising every
+		// call through one token (and only touching the others on a 403).
+		idx = int((c.tokenIdx.Add(1) - 1) % int64(len(c.tokens)))
 	}
 	slot := &c.slots[idx]
 	slot.mu.Lock()

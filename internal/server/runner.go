@@ -211,42 +211,45 @@ func (r *Runner) scrapeAndPush(runDir string, t scraper.RepoTarget, set Settings
 // autoTune nudges the per-call delay based on the batch's fetch-failure rate:
 // back off when failures climb (limits too aggressive), speed up when they're
 // negligible. Self-learns a sustainable pace within [50ms, 2000ms].
-func (r *Runner) autoTune(scraped, failed int, rateLimited bool) {
-	set := r.settings.Get()
-	if !set.AutoTune {
+// autoTune paces the per-call delay to spend the available GitHub rate-limit
+// budget evenly until it resets — maximising throughput without exhausting it.
+// With round-robin token use the call rate is numTokens/delay, so
+// delay = numTokens * secondsToReset / remainingCalls. The /rate_limit probe is
+// free (it doesn't consume the core budget).
+func (r *Runner) autoTune(_ int, _ int, _ bool) {
+	if !r.settings.Get().AutoTune {
 		return
 	}
-	cur := set.DelayMs
-	next := cur
-	reason := ""
-	switch {
-	case rateLimited:
-		// GitHub throttled the whole pass — back off hard.
-		next = cur*2 + 50
-		if next > 2000 {
-			next = 2000
-		}
-		reason = "rate-limited"
-	case scraped >= 20:
-		rate := float64(failed) / float64(scraped)
-		switch {
-		case rate > 0.15:
-			next = cur*3/2 + 25
-			if next > 2000 {
-				next = 2000
-			}
-			reason = fmt.Sprintf("fail-rate=%.0f%%", rate*100)
-		case rate < 0.03 && cur > 60:
-			next = cur * 9 / 10
-			if next < 60 {
-				next = 60
-			}
-			reason = "clean"
+	statuses := r.gh.ProbeAllTokens()
+	if len(statuses) == 0 {
+		return
+	}
+	remaining := 0
+	var soonest time.Time
+	for _, s := range statuses {
+		remaining += s.Core.Remaining
+		if soonest.IsZero() || s.Core.Reset.Before(soonest) {
+			soonest = s.Core.Reset
 		}
 	}
+	horizon := time.Until(soonest).Seconds()
+	if horizon < 60 {
+		horizon = 60
+	}
+	if remaining < 1 {
+		remaining = 1
+	}
+	next := int(float64(len(statuses)) * horizon / float64(remaining) * 1000.0)
+	if next < 100 {
+		next = 100
+	}
+	if next > 5000 {
+		next = 5000
+	}
+	cur := r.settings.Get().DelayMs
 	if next != cur {
 		r.settings.Update(SettingsPatch{DelayMs: &next})
-		log.Printf("auto-tune: %s → delay %dms→%dms", reason, cur, next)
+		log.Printf("auto-tune: core %d remaining, reset ~%.0fs → delay %dms→%dms", remaining, horizon, cur, next)
 	}
 }
 
