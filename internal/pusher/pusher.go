@@ -118,6 +118,37 @@ func (c *Client) Ping() error {
 	return err
 }
 
+// ListCount returns the current contact count of the target list (the true size
+// of the Scraped audience, including contacts added outside this scraper).
+func (c *Client) ListCount() (int, error) {
+	url := strings.TrimRight(c.BaseURL, "/") + "/api/lists"
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return 0, err
+	}
+	if c.Secret != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Secret)
+	}
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	var lists []struct {
+		ID           string `json:"id"`
+		ContactCount int    `json:"contactCount"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&lists); err != nil {
+		return 0, err
+	}
+	for _, l := range lists {
+		if l.ID == c.ListID {
+			return l.ContactCount, nil
+		}
+	}
+	return 0, nil
+}
+
 // PushCSV reads a stargazer CSV file and imports its contacts into the list.
 // sourceRepo (e.g. "facebook/react") is recorded on each contact's attributes
 // and tags for provenance.

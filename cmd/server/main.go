@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -59,10 +60,32 @@ func main() {
 	stats := server.NewStatsStore(cfg.StatsPath, 50)
 	repoStore := server.NewRepoStore(cfg.RepoStatsPath)
 	runner := server.NewRunner(cfg, queue, push, settings, stats, repoStore, recent)
-	srv := server.New(cfg, queue, runner, settings, stats, repoStore, recent)
+	audienceTotal := &atomic.Int64{}
+	srv := server.New(cfg, queue, runner, settings, stats, repoStore, recent, audienceTotal)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Keep the true Scraped-audience size fresh (includes contacts added outside
+	// this scraper, e.g. bulk imports), for the dashboard.
+	refreshAudience := func() {
+		if n, err := push.ListCount(); err == nil {
+			audienceTotal.Store(int64(n))
+		}
+	}
+	refreshAudience()
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				refreshAudience()
+			}
+		}
+	}()
 
 	// Populate total star counts for already-queued repos so the dashboard
 	// shows their progress bars without waiting for the first scrape.

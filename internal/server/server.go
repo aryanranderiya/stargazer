@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"stargazer/internal/repoqueue"
@@ -27,12 +28,13 @@ type Server struct {
 	stats    *StatsStore
 	repos    *RepoStore
 	recent   *RecentStore
+	audience *atomic.Int64
 	http     *http.Server
 }
 
 // New builds the HTTP server and routes.
-func New(cfg Config, q *repoqueue.Queue, runner *Runner, settings *SettingsStore, stats *StatsStore, repoStore *RepoStore, recent *RecentStore) *Server {
-	s := &Server{cfg: cfg, queue: q, runner: runner, settings: settings, stats: stats, repos: repoStore, recent: recent}
+func New(cfg Config, q *repoqueue.Queue, runner *Runner, settings *SettingsStore, stats *StatsStore, repoStore *RepoStore, recent *RecentStore, audience *atomic.Int64) *Server {
+	s := &Server{cfg: cfg, queue: q, runner: runner, settings: settings, stats: stats, repos: repoStore, recent: recent, audience: audience}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/health", s.handleHealth)
@@ -91,9 +93,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		"queue":     s.queue.Snapshot(),
 		"repos":     s.repos.Snapshot(s.queueOrder()),
 		"settings":  s.settings.Get(),
-		"totals":    totals,
-		"lastRun":   lastRun,
-		"tokens":    len(s.cfg.Tokens),
+		"totals":        totals,
+		"audienceTotal": s.audience.Load(),
+		"lastRun":       lastRun,
+		"tokens":        len(s.cfg.Tokens),
 		"listId":    s.cfg.EmailListID,
 		"emailApi":  s.cfg.EmailAPIURL,
 		"source":    s.cfg.Source,

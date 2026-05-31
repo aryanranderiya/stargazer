@@ -147,7 +147,7 @@
   <div id="view-overview">
   <section style="margin-top:8px">
     <div class="kpis">
-      <div class="card kpi hero"><div class="v num" id="k-imported">—</div><div class="k">Emails ingested → Scraped audience</div><div class="sub" id="k-source">source = stargazer:owner/repo</div></div>
+      <div class="card kpi hero"><div class="v num" id="k-imported">—</div><div class="k">Contacts in Scraped audience</div><div class="sub" id="k-source">—</div></div>
       <div class="card kpi"><div class="v num" id="k-scraped">—</div><div class="k">Stargazers scraped</div></div>
       <div class="card kpi"><div class="v num" id="k-success">—</div><div class="k">Scrape success<span class="tip">?<span class="box"><b>Fetch success rate</b> — share of stargazers whose profile/email lookup succeeded. If this drops, GitHub is throttling us (limits too aggressive). Auto-tune slows down to fix it.</span></span></div></div>
       <div class="card kpi"><div class="v num" id="k-repos">—</div><div class="k">Repos in queue</div></div>
@@ -260,11 +260,12 @@ async function refresh(){
   $("m-rate").textContent=rate>0?Math.round(rate*60).toLocaleString()+"/min":"—";
   $("m-queue").textContent=(q.total||0)+" repos";$("m-tokens").textContent=d.tokens;
 
-  $("k-imported").textContent=fmt(t.imported);$("k-scraped").textContent=fmt(t.scraped);
+  $("k-imported").textContent=fmt(d.audienceTotal||t.imported);$("k-scraped").textContent=fmt(t.scraped);
   $("k-repos").textContent=fmt(q.total);$("k-runs").textContent=fmt(t.runs);
   const ct=(cc&&cc.counts)||{}; const tot=ct.total||0, fail=ct.failed||0;
   $("k-success").textContent=tot>0?Math.round((tot-fail)/tot*100)+"%":"—";
-  $("k-source").textContent="source = stargazer:owner/repo";
+  const findRate=t.scraped>0?Math.round((t.sent/t.scraped)*100):0;
+  $("k-source").textContent=`+${fmt(t.imported)} new by scraper · ${findRate}% of scraped had a real email · ${fmt(t.noreply)} no-reply dropped`;
 
   if(!editing){$("enabled").checked=!s.paused;$("autoTune").checked=!!s.autoTune;$("delayMs").value=s.delayMs;$("maxStars").value=s.maxStars;$("concurrency").value=s.concurrency;}
   $("pausehint").textContent=s.paused?"Off — paused. Flip on to resume.":(allDone?"On — queue fully walked; waiting for new repos.":"On — continuously scraping.");
