@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"math/rand"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -91,6 +93,10 @@ type User struct {
 	Followers   int    `json:"followers"`
 	HTMLURL     string `json:"html_url"`
 	Type        string `json:"type"`
+	// CommitEmail is a real (non-noreply) author email resolved from the user's
+	// own-repo default-branch history during the GraphQL batch fetch. Empty when
+	// unresolved. Populated only by GetUsersBatch, not the REST GetUser.
+	CommitEmail string `json:"-"`
 }
 
 // StarEntry is returned by the star+json accept header for stargazers.
@@ -232,7 +238,11 @@ func NewClient(tokens []string, delay time.Duration) *Client {
 func (c *Client) acquireToken() string {
 	idx := 0
 	if len(c.tokens) > 0 {
-		idx = int(c.tokenIdx.Load() % int64(len(c.tokens)))
+		// Round-robin across tokens so the per-call delay throttles each token
+		// independently — N tokens deliver N× the sustained call rate and use
+		// the full combined rate-limit budget, instead of serialising every
+		// call through one token (and only touching the others on a 403).
+		idx = int((c.tokenIdx.Add(1) - 1) % int64(len(c.tokens)))
 	}
 	slot := &c.slots[idx]
 	slot.mu.Lock()
@@ -253,6 +263,29 @@ func (c *Client) acquireToken() string {
 
 func (c *Client) rotateToken() {
 	c.tokenIdx.Add(1)
+}
+
+// secondaryRateLimitWait returns how long to back off for a 403/429 that is a
+// GitHub SECONDARY rate limit (a Retry-After header, or a "secondary rate
+// limit"/"abuse" body message). Returns 0 for a primary limit (token's hourly
+// budget exhausted) so the caller rotates tokens instead of waiting. Capped so a
+// hostile Retry-After can't stall the worker indefinitely.
+func secondaryRateLimitWait(h http.Header, body []byte) time.Duration {
+	const cap = 90 * time.Second
+	if ra := strings.TrimSpace(h.Get("Retry-After")); ra != "" {
+		if secs, err := strconv.Atoi(ra); err == nil && secs >= 0 {
+			d := time.Duration(secs+1) * time.Second
+			if d > cap {
+				d = cap
+			}
+			return d
+		}
+	}
+	msg := strings.ToLower(string(body))
+	if strings.Contains(msg, "secondary rate limit") || strings.Contains(msg, "abuse") {
+		return 30 * time.Second // clearly secondary but no Retry-After — fixed backoff
+	}
+	return 0 // primary limit (or plain 403) — let the caller rotate tokens
 }
 
 func (c *Client) doRequest(url, accept, token string, v interface{}) error {
@@ -283,10 +316,16 @@ func (c *Client) doRequest(url, accept, token string, v interface{}) error {
 		return nil
 	case 401:
 		return fmt.Errorf("unauthorized – check your GitHub token")
-	case 403:
-		return fmt.Errorf("rate limited (403)")
-	case 429:
-		return fmt.Errorf("rate limited (429)")
+	case 403, 429:
+		// Distinguish GitHub's SECONDARY rate limit (Retry-After header / "secondary
+		// rate limit" body — account/IP-wide, so rotating tokens won't help; we MUST
+		// wait) from a PRIMARY limit (this token's hourly budget gone → rotate).
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if wait := secondaryRateLimitWait(resp.Header, body); wait > 0 {
+			time.Sleep(wait)
+			return &retryableError{statusCode: resp.StatusCode, err: fmt.Errorf("secondary rate limit; waited %s", wait.Truncate(time.Second))}
+		}
+		return fmt.Errorf("rate limited (%d)", resp.StatusCode)
 	case 404:
 		return fmt.Errorf("not found (404): %s", url)
 	case 422:
@@ -371,7 +410,22 @@ func (c *Client) GetAllStargazers(owner, repo string, maxCount int, onPage func(
 // them to the returned channel. The channel is closed when all pages are fetched.
 // onPage is called with the cumulative count so far (may be approximate due to concurrency).
 // errCh receives at most one error; nil if everything succeeded.
-func (c *Client) StreamStargazers(owner, repo string, maxCount int, concurrency int, onPage func(int), errCh chan<- error) <-chan StarEntry {
+// GetRepoStarCount returns the repository's total stargazer count, used to show
+// per-repo progress in the dashboard.
+func (c *Client) GetRepoStarCount(owner, repo string) (int, error) {
+	url := fmt.Sprintf("%s/repos/%s/%s", apiBase, owner, repo)
+	var r struct {
+		StargazersCount int `json:"stargazers_count"`
+	}
+	if err := c.get(url, "", &r); err != nil {
+		return 0, err
+	}
+	return r.StargazersCount, nil
+}
+
+// StreamStargazers streams up to maxCount stargazers starting at startPage
+// (1-based, 100 per page) so callers can resume deeper into a repo across runs.
+func (c *Client) StreamStargazers(owner, repo string, maxCount int, concurrency int, startPage int, onPage func(int), errCh chan<- error) <-chan StarEntry {
 	out := make(chan StarEntry, 200)
 
 	if concurrency < 1 {
@@ -403,7 +457,10 @@ func (c *Client) StreamStargazers(owner, repo string, maxCount int, concurrency 
 
 		// Use a semaphore to limit concurrent fetches.
 		sem := make(chan struct{}, concurrency)
-		page := 1
+		if startPage < 1 {
+			startPage = 1
+		}
+		page := startPage
 
 		for {
 			if isStopped() {
@@ -477,6 +534,110 @@ func (c *Client) StreamStargazers(owner, repo string, maxCount int, concurrency 
 	}()
 
 	return out
+}
+
+// StargazerStreamResult is sent exactly once when a GraphQL stargazer stream
+// finishes: the cursor to resume from next run, whether the repo is fully walked
+// (no more pages), and any fatal fetch error.
+type StargazerStreamResult struct {
+	LastCursor string
+	Exhausted  bool
+	Err        error
+}
+
+type gqlStargazerPage struct {
+	Repository struct {
+		Stargazers struct {
+			PageInfo struct {
+				EndCursor   string `json:"endCursor"`
+				HasNextPage bool   `json:"hasNextPage"`
+			} `json:"pageInfo"`
+			Edges []struct {
+				Cursor    string `json:"cursor"`
+				StarredAt string `json:"starredAt"`
+				Node      struct {
+					Login      string `json:"login"`
+					DatabaseID int64  `json:"databaseId"`
+				} `json:"node"`
+			} `json:"edges"`
+		} `json:"stargazers"`
+	} `json:"repository"`
+}
+
+func (c *Client) fetchStargazerPageGraphQL(owner, repo, cursor string) (*gqlStargazerPage, error) {
+	after := "null"
+	if cursor != "" {
+		after = fmt.Sprintf("%q", cursor)
+	}
+	// orderBy STARRED_AT ASC gives a stable order (oldest first) so cursors —
+	// and the legacy REST page offset we fast-forward past — stay consistent
+	// across runs.
+	query := fmt.Sprintf(`query { repository(owner: %q, name: %q) { stargazers(first: 100, after: %s, orderBy: {field: STARRED_AT, direction: ASC}) { pageInfo { endCursor hasNextPage } edges { cursor starredAt node { login databaseId } } } } }`, owner, repo, after)
+	var data gqlStargazerPage
+	if err := c.graphql(query, &data); err != nil {
+		return nil, err
+	}
+	return &data, nil
+}
+
+// StreamStargazersGraphQL lists a repo's stargazers via the GraphQL API, which —
+// unlike the REST endpoint (hard-capped at 40,000 / page 400) — has no
+// pagination ceiling, so it can walk repos of any size. It resumes from
+// startCursor; if startCursor is empty but skip>0 (a repo previously walked via
+// the REST page model), it fast-forwards past `skip` entries first to derive the
+// cursor without reprocessing them. It emits up to maxCount entries (0 = until
+// exhausted), then reports the resume cursor + whether the repo is fully walked
+// on the returned result channel (sent once).
+func (c *Client) StreamStargazersGraphQL(owner, repo string, maxCount, skip int, startCursor string, onPage func(int)) (<-chan StarEntry, <-chan StargazerStreamResult) {
+	out := make(chan StarEntry, 200)
+	resCh := make(chan StargazerStreamResult, 1)
+
+	go func() {
+		defer close(out)
+		cursor := startCursor
+		lastCursor := startCursor
+		sent, skipped := 0, 0
+
+		for {
+			page, err := c.fetchStargazerPageGraphQL(owner, repo, cursor)
+			if err != nil {
+				resCh <- StargazerStreamResult{LastCursor: lastCursor, Err: fmt.Errorf("fetching stargazers: %w", err)}
+				return
+			}
+			edges := page.Repository.Stargazers.Edges
+			if len(edges) == 0 {
+				resCh <- StargazerStreamResult{LastCursor: lastCursor, Exhausted: true}
+				return
+			}
+			for _, e := range edges {
+				cursor = e.Cursor
+				lastCursor = e.Cursor
+				if skip > 0 && skipped < skip {
+					skipped++
+					continue
+				}
+				out <- StarEntry{StarredAt: e.StarredAt, User: User{Login: e.Node.Login, ID: e.Node.DatabaseID}}
+				sent++
+				if maxCount > 0 && sent >= maxCount {
+					if onPage != nil {
+						onPage(sent)
+					}
+					resCh <- StargazerStreamResult{LastCursor: lastCursor, Exhausted: false}
+					return
+				}
+			}
+			if onPage != nil {
+				onPage(sent)
+			}
+			if !page.Repository.Stargazers.PageInfo.HasNextPage {
+				resCh <- StargazerStreamResult{LastCursor: lastCursor, Exhausted: true}
+				return
+			}
+			cursor = page.Repository.Stargazers.PageInfo.EndCursor
+		}
+	}()
+
+	return out, resCh
 }
 
 // GetUser fetches a full user profile.
@@ -615,8 +776,14 @@ func (c *Client) graphql(query string, v interface{}) error {
 			}
 
 			if resp.StatusCode == 403 || resp.StatusCode == 429 {
+				rlBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 				resp.Body.Close()
-				// Signal rate-limit to the outer loop via result; not retryable here.
+				// Secondary limit (account/IP-wide): wait it out + retry the same
+				// token. Primary: signal the outer loop to rotate tokens.
+				if wait := secondaryRateLimitWait(resp.Header, rlBody); wait > 0 {
+					time.Sleep(wait)
+					return &retryableError{statusCode: resp.StatusCode, err: fmt.Errorf("secondary rate limit; waited %s", wait.Truncate(time.Second))}
+				}
 				result = fmt.Errorf("rate limited (%d)", resp.StatusCode)
 				return nil // stop retryWithBackoff; outer loop handles rotation
 			}
@@ -646,6 +813,16 @@ func (c *Client) graphql(query string, v interface{}) error {
 				return err
 			}
 			if len(envelope.Errors) > 0 {
+				// Partial errors (e.g. "Could not resolve to a User" for one aliased
+				// login) still return data for every alias that DID resolve — use it
+				// instead of discarding the whole batch over one deleted/renamed user.
+				// A fully-empty payload (query-validation or scope rejection, which
+				// never executes) is the only fatal case; returning the error lets the
+				// caller retry (e.g. without the scope-gated email field).
+				if d := string(envelope.Data); len(envelope.Data) > 0 && d != "null" && d != "{}" {
+					result = json.Unmarshal(envelope.Data, v)
+					return nil
+				}
 				result = fmt.Errorf("graphql error: %s", envelope.Errors[0].Message)
 				return nil
 			}
@@ -673,7 +850,7 @@ type gqlUser struct {
 	Login      string `json:"login"`
 	DatabaseID int64  `json:"databaseId"`
 	Name       string `json:"name"`
-	Email      string `json:"email"`
+	Email      string `json:"email"` // empty unless the serving token had read:user scope
 	Company    string `json:"company"`
 	Location   string `json:"location"`
 	Bio        string `json:"bio"`
@@ -683,9 +860,24 @@ type gqlUser struct {
 	Repositories struct {
 		TotalCount int `json:"totalCount"`
 		Nodes      []struct {
-			NameWithOwner string `json:"nameWithOwner"`
-			IsFork        bool   `json:"isFork"`
-			IsPrivate     bool   `json:"isPrivate"`
+			NameWithOwner    string `json:"nameWithOwner"`
+			IsFork           bool   `json:"isFork"`
+			IsPrivate        bool   `json:"isPrivate"`
+			DefaultBranchRef *struct {
+				Target *struct {
+					History struct {
+						Nodes []struct {
+							Author struct {
+								Email string `json:"email"`
+								Name  string `json:"name"`
+								User  *struct {
+									Login string `json:"login"`
+								} `json:"user"`
+							} `json:"author"`
+						} `json:"nodes"`
+					} `json:"history"`
+				} `json:"target"`
+			} `json:"defaultBranchRef"`
 		} `json:"nodes"`
 	} `json:"repositories"`
 	URL string `json:"url"`
@@ -699,32 +891,75 @@ type gqlUser struct {
 func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) (map[string]*User, map[string][]Repo) {
 	result := make(map[string]*User)
 	reposResult := make(map[string][]Repo)
-	const chunkSize = 20
+	// Small chunks keep each query cheap for GitHub to compute: the nested commit
+	// history below is expensive server-side (it walks each repo's commit graph),
+	// and large chunks made GitHub return HTTP 502 — failing the whole batch and
+	// forcing a per-user REST fallback. 10 × 5 repos × 2 commits stays well within
+	// what the GraphQL backend serves reliably.
+	const chunkSize = 10
 
-	fetched := 0
-	for start := 0; start < len(logins); start += chunkSize {
-		end := start + chunkSize
-		if end > len(logins) {
-			end = len(logins)
-		}
-		chunk := logins[start:end]
+	// Fetch chunks CONCURRENTLY. The per-token throttle in acquireToken paces the
+	// actual GraphQL call rate (round-robin across tokens), so firing chunks in
+	// parallel fills the token budget instead of serialising one chunk at a time —
+	// the serial prefetch was the real throughput bottleneck, not worker count.
+	// result/reposResult are written under mu; progress is atomic.
+	maxConcurrent := len(c.tokens) * 2
+	if maxConcurrent < 2 {
+		maxConcurrent = 2
+	}
+	if maxConcurrent > 16 {
+		maxConcurrent = 16
+	}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var fetched int64
+	sem := make(chan struct{}, maxConcurrent)
+
+	processChunk := func(chunk []string) {
+		defer wg.Done()
+		defer func() { <-sem }()
 
 		// Build the GraphQL query with aliases u0, u1, ...
-		var sb strings.Builder
-		sb.WriteString("query {\n")
-		for i, login := range chunk {
-			fmt.Fprintf(&sb, "  u%d: user(login: %q) { login databaseId name email company location bio followers { totalCount } repositories(first: 30, orderBy: {field: PUSHED_AT, direction: DESC}, ownerAffiliations: OWNER) { totalCount nodes { nameWithOwner isFork isPrivate } } url }\n", i, login)
+		//
+		// The top-level User.email field needs the read:user/user:email scope.
+		// Tokens carry a mix of scopes (some repo-only), and round-robin means any
+		// token may serve this query, so we try WITH email first and, if a token
+		// rejects it for scope, retry the same batch WITHOUT email. Either way the
+		// batch succeeds via GraphQL (no per-user REST fallback); only the profile
+		// email is skipped on repo-only tokens. The commit author.email below is
+		// GitActor.email (public git metadata, never scope-gated), so it always
+		// resolves. History is kept shallow (5 repos × 2 commits) — deeper queries
+		// make GitHub return HTTP 502 and fail the whole batch.
+		buildQuery := func(withEmail bool) string {
+			emailField := ""
+			if withEmail {
+				emailField = "email "
+			}
+			var sb strings.Builder
+			sb.WriteString("query {\n")
+			for i, login := range chunk {
+				fmt.Fprintf(&sb, "  u%d: user(login: %q) { login databaseId name %scompany location bio followers { totalCount } repositories(first: 5, orderBy: {field: PUSHED_AT, direction: DESC}, ownerAffiliations: OWNER) { totalCount nodes { nameWithOwner isFork isPrivate defaultBranchRef { target { ... on Commit { history(first: 2) { nodes { author { email name user { login } } } } } } } } } url }\n", i, login, emailField)
+			}
+			sb.WriteString("}")
+			return sb.String()
 		}
-		sb.WriteString("}")
 
 		var data map[string]json.RawMessage
-		if err := c.graphql(sb.String(), &data); err != nil {
-			// Silently skip this chunk on error.
+		err := c.graphql(buildQuery(true), &data)
+		if err != nil && strings.Contains(strings.ToLower(err.Error()), "scope") {
+			// Token lacks read:user — retry this batch without the profile email.
+			err = c.graphql(buildQuery(false), &data)
+		}
+		if err != nil {
+			// Skip this chunk but log it — a malformed query or a 502/complexity
+			// rejection would otherwise silently degrade every email to a REST
+			// fallback with no visible signal.
+			log.Printf("graphql batch (%d users) failed: %v", len(chunk), err)
+			n := atomic.AddInt64(&fetched, int64(len(chunk)))
 			if onProgress != nil {
-				fetched += len(chunk)
-				onProgress(fetched)
+				onProgress(int(n))
 			}
-			continue
+			return
 		}
 
 		for _, raw := range data {
@@ -747,27 +982,61 @@ func (c *Client) GetUsersBatch(logins []string, onProgress func(int)) (map[strin
 				PublicRepos: gu.Repositories.TotalCount,
 				HTMLURL:     gu.URL,
 			}
-			result[gu.Login] = u
-
-			// Convert repo nodes to []Repo.
+			// Convert repo nodes to []Repo and, while we're walking them, resolve
+			// a real commit author-email from the default-branch history. The user
+			// owns these repos, so recent commits are overwhelmingly theirs; prefer
+			// a commit whose linked author is this user, else accept an unlinked
+			// real email (a bare git identity, almost always the owner's). This is
+			// the GraphQL email resolver — it does the work the REST own-repo scan
+			// used to, on the idle GraphQL pool, with zero extra requests.
+			var repos []Repo
 			if len(gu.Repositories.Nodes) > 0 {
-				repos := make([]Repo, 0, len(gu.Repositories.Nodes))
+				repos = make([]Repo, 0, len(gu.Repositories.Nodes))
 				for _, node := range gu.Repositories.Nodes {
 					repos = append(repos, Repo{
 						FullName: node.NameWithOwner,
 						Fork:     node.IsFork,
 						Private:  node.IsPrivate,
 					})
+					if u.CommitEmail != "" || node.IsFork || node.IsPrivate || node.DefaultBranchRef == nil || node.DefaultBranchRef.Target == nil {
+						continue
+					}
+					for _, com := range node.DefaultBranchRef.Target.History.Nodes {
+						if !IsRealEmail(com.Author.Email) {
+							continue
+						}
+						if com.Author.User != nil && !strings.EqualFold(com.Author.User.Login, gu.Login) {
+							continue // commit by a different GitHub user on this repo
+						}
+						u.CommitEmail = com.Author.Email
+						break
+					}
 				}
+			}
+			mu.Lock()
+			result[gu.Login] = u
+			if repos != nil {
 				reposResult[gu.Login] = repos
 			}
+			mu.Unlock()
 		}
 
-		fetched += len(chunk)
+		n := atomic.AddInt64(&fetched, int64(len(chunk)))
 		if onProgress != nil {
-			onProgress(fetched)
+			onProgress(int(n))
 		}
 	}
+
+	for start := 0; start < len(logins); start += chunkSize {
+		end := start + chunkSize
+		if end > len(logins) {
+			end = len(logins)
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go processChunk(logins[start:end])
+	}
+	wg.Wait()
 	return result, reposResult
 }
 

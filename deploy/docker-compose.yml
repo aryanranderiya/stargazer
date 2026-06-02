@@ -1,0 +1,29 @@
+# Runs stargazer-server alongside the GAIA email platform. It joins the email
+# platform's Docker network so it can reach the API at http://api:3020 without
+# any public hop. Set EMAIL_NETWORK in .env to the platform's network name
+# (find it with: docker network ls).
+name: stargazer
+
+services:
+  stargazer-server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: stargazer-server:latest
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - stargazer-data:/data
+    networks:
+      - email
+    # Not published by default. To poke it from the host, uncomment:
+    # ports:
+    #   - "127.0.0.1:8088:8080"
+
+volumes:
+  stargazer-data:
+
+networks:
+  email:
+    external: true
+    name: ${EMAIL_NETWORK:-email-automation_default}

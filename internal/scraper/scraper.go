@@ -28,7 +28,9 @@ type Config struct {
 	Concurrency  int
 	MaxRepos     int // max own (non-fork) repos to scan per user
 	MaxForkRepos int // max forked repos to scan per user
-	MaxStars     int // 0 = fetch all
+	MaxStars     int // max stargazers to scrape this run (0 = all from the offset onward)
+	StartOffset  int // legacy REST page offset; only used to fast-forward when StartCursor is empty
+	StartCursor  string // GraphQL stargazer cursor to resume from (preferred resume point)
 	Delay        time.Duration
 	UseSearchAPI bool   // use the GitHub commit search API as a last resort
 	CachePath    string // path for on-disk user profile cache; defaults to $XDG_CONFIG/stargazer/user_cache.json
@@ -39,7 +41,7 @@ type Result struct {
 	Login       string
 	Name        string
 	Email       string
-	EmailSource string // "profile", "commit", "events", "search", or "noreply"
+	EmailSource string // "profile", "commit", "search", or "noreply"
 	FetchFailed bool
 	Company     string
 	Location    string
@@ -78,6 +80,8 @@ type Progress struct {
 	// Populated only when Done=true.
 	OutputPath string
 	Count      int
+	Cursor     string // GraphQL stargazer cursor reached this run (resume point)
+	Exhausted  bool   // true when the repo has no more stargazers to walk
 
 	// Multi-repo tracking: which repo is currently being processed.
 	RepoName  string // "owner/repo"
@@ -85,15 +89,18 @@ type Progress struct {
 	RepoTotal int    // total number of repos to scrape
 }
 
-// workerCfg bundles per-worker config passed into processUser.
+// workerCfg bundles per-worker config passed into processUser. The prefetched
+// user/repos for THIS stargazer are copied in by the worker under the profile
+// lock — processUser must never touch the shared prefetch maps directly, or it
+// races the prefetcher writing the next batch ("concurrent map read and write").
 type workerCfg struct {
-	maxRepos        int
-	maxForkRepos    int
-	targetOwner     string
-	targetRepo      string
-	useSearchAPI    bool
-	profiles        map[string]*gh.User  // pre-fetched profiles; may be nil
-	prefetchedRepos map[string][]gh.Repo // pre-fetched repos via GraphQL; may be nil
+	maxRepos     int
+	maxForkRepos int
+	targetOwner  string
+	targetRepo   string
+	useSearchAPI bool
+	user         *gh.User  // pre-fetched profile for this stargazer; nil if not prefetched
+	userRepos    []gh.Repo // pre-fetched repos (GraphQL) for this stargazer; nil if none
 }
 
 var csvHeaders = []string{
@@ -140,7 +147,7 @@ func Run(cfg Config, progressCh chan<- Progress) {
 			RepoTotal: totalRepos,
 		})
 
-		count, repoOutputPath, err := runRepo(client, cfg, repo, outputPath, userCache, progressCh, ri, totalRepos)
+		count, repoOutputPath, cursor, exhausted, err := runRepo(client, cfg, repo, outputPath, userCache, progressCh, ri, totalRepos)
 		if err != nil {
 			send(progressCh, Progress{
 				Done:      true,
@@ -148,6 +155,8 @@ func Run(cfg Config, progressCh chan<- Progress) {
 				RepoName:  repoName,
 				RepoIndex: ri,
 				RepoTotal: totalRepos,
+				Count:     count, // partial progress before the error
+				Cursor:    cursor, // persist however far we got before the error
 			})
 			return
 		}
@@ -161,6 +170,8 @@ func Run(cfg Config, progressCh chan<- Progress) {
 				RepoName:   repoName,
 				RepoIndex:  ri,
 				RepoTotal:  totalRepos,
+				Cursor:     cursor,
+				Exhausted:  exhausted,
 			})
 		}
 	}
@@ -169,46 +180,70 @@ func Run(cfg Config, progressCh chan<- Progress) {
 	_ = userCache.Save()
 }
 
-// runRepo scrapes a single repo and writes results to outputPath.
-// Returns the count of results, the resolved output path, and any error.
-func runRepo(client *gh.Client, cfg Config, repo RepoTarget, outputPath string, userCache *cache.Cache, progressCh chan<- Progress, repoIdx, repoTotal int) (int, string, error) {
+// runRepo scrapes a single repo and writes results to outputPath. Returns the
+// count of results, the resolved output path, the stargazer cursor reached (to
+// resume from next run), whether the repo is fully walked, and any error.
+func runRepo(client *gh.Client, cfg Config, repo RepoTarget, outputPath string, userCache *cache.Cache, progressCh chan<- Progress, repoIdx, repoTotal int) (int, string, string, bool, error) {
 	repoName := repo.Owner + "/" + repo.Repo
 
 	dir := filepath.Dir(outputPath)
 	if dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return 0, "", fmt.Errorf("creating output directory: %w", err)
+			return 0, "", "", false, fmt.Errorf("creating output directory: %w", err)
 		}
 	}
 
 	resolved := resolveOutputPath(outputPath)
 	f, err := os.Create(resolved)
 	if err != nil {
-		return 0, "", fmt.Errorf("creating output file: %w", err)
+		return 0, "", "", false, fmt.Errorf("creating output file: %w", err)
 	}
 	defer f.Close()
 
 	csvWriter := csv.NewWriter(f)
 	if err := csvWriter.Write(csvHeaders); err != nil {
-		return 0, "", fmt.Errorf("writing CSV headers: %w", err)
+		return 0, "", "", false, fmt.Errorf("writing CSV headers: %w", err)
 	}
 	var csvMu sync.Mutex
 
-	fetchErrCh := make(chan error, 1)
-	starCh := client.StreamStargazers(repo.Owner, repo.Repo, cfg.MaxStars, cfg.Concurrency, func(fetched int) {
+	// Resume by cursor when we have one; otherwise fast-forward past the legacy
+	// REST page offset (one-time, validated to land at the same place).
+	skip := 0
+	if cfg.StartCursor == "" {
+		skip = cfg.StartOffset
+	}
+	var finalCursor string = cfg.StartCursor
+	var exhausted bool
+	starCh, resCh := client.StreamStargazersGraphQL(repo.Owner, repo.Repo, cfg.MaxStars, skip, cfg.StartCursor, func(fetched int) {
+		status := fmt.Sprintf("[%s] Fetched %d stargazers...", repoName, fetched)
+		if skip > 0 && fetched == 0 {
+			status = fmt.Sprintf("[%s] Fast-forwarding to resume point (offset %d)...", repoName, cfg.StartOffset)
+		}
 		send(progressCh, Progress{
 			Stage:     "fetching",
-			Status:    fmt.Sprintf("[%s] Fetched %d stargazers...", repoName, fetched),
+			Status:    status,
 			RepoName:  repoName,
 			RepoIndex: repoIdx,
 			RepoTotal: repoTotal,
 		})
-	}, fetchErrCh)
+	})
 
-	const profileBatchSize = 20
+	// One prefetch batch = profileBatchSize logins, fetched as concurrent GraphQL
+	// chunks (GetUsersBatch parallelises internally, ~10 logins/chunk). Size it to
+	// ONE chunk-round across all tokens — N tokens × 10 — so a batch resolves in
+	// ~a single GraphQL round-trip regardless of token count; add tokens and the
+	// batch (and prefetch throughput) scales automatically. Clamped for sanity.
+	const graphqlChunkSize = 10 // mirrors GetUsersBatch's chunkSize
+	profileBatchSize := len(cfg.Tokens) * graphqlChunkSize
+	if profileBatchSize < 20 {
+		profileBatchSize = 20
+	}
+	if profileBatchSize > 150 {
+		profileBatchSize = 150
+	}
 
-	workCh := make(chan gh.StarEntry, profileBatchSize*2)
-	resultCh := make(chan Result, profileBatchSize*2)
+	workCh := make(chan gh.StarEntry, profileBatchSize*3)
+	resultCh := make(chan Result, profileBatchSize*3)
 
 	var profileMu sync.RWMutex
 	profiles := make(map[string]*gh.User)
@@ -220,17 +255,22 @@ func runRepo(client *gh.Client, cfg Config, repo RepoTarget, outputPath string, 
 		go func() {
 			defer wg.Done()
 			for star := range workCh {
+				// Copy out THIS stargazer's prefetched data under the lock; never
+				// hand processUser a reference to the shared maps (it would race the
+				// prefetcher writing the next batch).
 				profileMu.RLock()
-				wcfg := workerCfg{
-					maxRepos:        cfg.MaxRepos,
-					maxForkRepos:    cfg.MaxForkRepos,
-					targetOwner:     repo.Owner,
-					targetRepo:      repo.Repo,
-					useSearchAPI:    cfg.UseSearchAPI,
-					profiles:        profiles,
-					prefetchedRepos: prefetchedRepos,
-				}
+				u := profiles[star.User.Login]
+				ur := prefetchedRepos[star.User.Login]
 				profileMu.RUnlock()
+				wcfg := workerCfg{
+					maxRepos:     cfg.MaxRepos,
+					maxForkRepos: cfg.MaxForkRepos,
+					targetOwner:  repo.Owner,
+					targetRepo:   repo.Repo,
+					useSearchAPI: cfg.UseSearchAPI,
+					user:         u,
+					userRepos:    ur,
+				}
 				resultCh <- processUser(client, star, wcfg)
 			}
 		}()
@@ -283,11 +323,9 @@ func runRepo(client *gh.Client, cfg Config, repo RepoTarget, outputPath string, 
 			return ch
 		}
 
-		dispatchPrefetched := func(pending <-chan prefetchResult) {
-			if pending == nil {
-				return
-			}
-			res := <-pending
+		// merge folds a finished prefetch into the shared maps and feeds its
+		// stargazers to the worker pool.
+		merge := func(res prefetchResult) {
 			profileMu.Lock()
 			for k, v := range res.profiles {
 				profiles[k] = v
@@ -301,59 +339,57 @@ func runRepo(client *gh.Client, cfg Config, repo RepoTarget, outputPath string, 
 			}
 		}
 
-		var batch []gh.StarEntry
-		var pending <-chan prefetchResult
-		total := 0
+		// Depth-N prefetch pipeline: keep up to prefetchDepth GetUsersBatch calls
+		// in flight at once (each itself fetches its chunks concurrently) instead
+		// of one batch at a time. The serial depth-1 pipeline was the throughput
+		// ceiling (~750/min); running several batches in parallel — paced by the
+		// per-token throttle + secondary-limit backoff — fills the token budget.
+		// The buffered pendingCh gives backpressure; a dispatcher drains it IN
+		// ORDER so stargazers still reach the workers in listing order.
+		// Depth 4 saturates a single repo's sequential cursor listing (the listing
+		// streams stargazers in order and shares the tokens with the prefetch, so
+		// it — not the token budget — is the per-repo ceiling at ~2k/min). More
+		// depth measured no faster; it just adds in-flight concurrency.
+		const prefetchDepth = 4
+		pendingCh := make(chan (<-chan prefetchResult), prefetchDepth)
+		dispDone := make(chan struct{})
+		go func() {
+			defer close(dispDone)
+			for ch := range pendingCh {
+				merge(<-ch)
+			}
+		}()
 
+		var batch []gh.StarEntry
+		total := 0
 		for star := range starCh {
 			total++
 			batch = append(batch, star)
 			if len(batch) >= profileBatchSize {
-				send(progressCh, Progress{
-					Stage:     "processing",
-					Status:    fmt.Sprintf("[%s] Processing stargazers... (%d fetched so far)", repoName, total),
-					Total:     total,
-					RepoName:  repoName,
-					RepoIndex: repoIdx,
-					RepoTotal: repoTotal,
-				})
-				newPending := startPrefetch(batch)
+				pendingCh <- startPrefetch(batch) // startPrefetch copies the batch synchronously
 				batch = batch[:0]
-				dispatchPrefetched(pending)
-				pending = newPending
+				if total%(profileBatchSize*4) == 0 {
+					send(progressCh, Progress{
+						Stage: "processing", Status: fmt.Sprintf("[%s] Processing stargazers... (%d fetched so far)", repoName, total),
+						Total: total, RepoName: repoName, RepoIndex: repoIdx, RepoTotal: repoTotal,
+					})
+				}
 			}
 		}
-
 		if len(batch) > 0 {
-			newPending := startPrefetch(batch)
-			dispatchPrefetched(pending)
-			pending = newPending
+			pendingCh <- startPrefetch(batch)
 		}
-		dispatchPrefetched(pending)
+		close(pendingCh)
+		<-dispDone // all prefetched stargazers have been handed to the workers
 
-		if fetchErr := <-fetchErrCh; fetchErr != nil && total == 0 {
-			producerErr = fetchErr
-			close(workCh)
-			wg.Wait()
-			close(resultCh)
-			return
+		// The GraphQL stargazer stream reports its final state once (buffered),
+		// available now without blocking. Capture resume cursor + exhausted flag.
+		res := <-resCh
+		finalCursor = res.LastCursor
+		exhausted = res.Exhausted
+		if res.Err != nil && total == 0 {
+			producerErr = res.Err
 		}
-
-		if total == 0 {
-			close(workCh)
-			wg.Wait()
-			close(resultCh)
-			return
-		}
-
-		send(progressCh, Progress{
-			Stage:     "processing",
-			Status:    fmt.Sprintf("[%s] All %d stargazers fetched. Processing...", repoName, total),
-			Total:     total,
-			RepoName:  repoName,
-			RepoIndex: repoIdx,
-			RepoTotal: repoTotal,
-		})
 
 		close(workCh)
 		wg.Wait()
@@ -397,10 +433,10 @@ func runRepo(client *gh.Client, cfg Config, repo RepoTarget, outputPath string, 
 	csvMu.Unlock()
 
 	if producerErr != nil {
-		return 0, "", producerErr
+		return count, resolved, finalCursor, exhausted, producerErr
 	}
 
-	return count, resolved, nil
+	return count, resolved, finalCursor, exhausted, nil
 }
 
 // processUser enriches a single stargazer entry with profile + email data.
@@ -413,8 +449,8 @@ func processUser(client *gh.Client, star gh.StarEntry, cfg workerCfg) Result {
 	}
 
 	var fetchErr error
-	user, hasCached := cfg.profiles[star.User.Login]
-	if !hasCached {
+	user := cfg.user
+	if user == nil {
 		user, fetchErr = client.GetUser(star.User.Login)
 	}
 	if fetchErr != nil || user == nil {
@@ -442,63 +478,25 @@ func processUser(client *gh.Client, star gh.StarEntry, cfg workerCfg) Result {
 		return result
 	}
 
-	// 2 & 3. Target repo commits and event data — fetched concurrently.
-	type commitResult struct{ email string }
-	type eventResult struct {
-		email string
-		repos []string
-		err   error
-	}
-
-	commitCh := make(chan commitResult, 1)
-	eventCh := make(chan eventResult, 1)
-
-	if cfg.targetOwner != "" && cfg.targetRepo != "" {
-		repoFull := cfg.targetOwner + "/" + cfg.targetRepo
-		scanned[repoFull] = true
-		go func() {
-			commitCh <- commitResult{firstRealEmailInCommits(client, repoFull, star.User.Login)}
-		}()
-	} else {
-		commitCh <- commitResult{}
-	}
-
-	go func() {
-		email, repos, err := client.GetUserEventData(star.User.Login)
-		eventCh <- eventResult{email, repos, err}
-	}()
-
-	cr := <-commitCh
-	if cr.email != "" {
-		result.Email = cr.email
+	// 2. Commit author-email from the user's own repos, resolved during the
+	// GraphQL batch fetch (default-branch history) — no extra REST call. This
+	// taps the otherwise-idle GraphQL rate-limit pool and resolves the bulk of
+	// emails before any REST fallback runs.
+	if user != nil && gh.IsRealEmail(user.CommitEmail) {
+		result.Email = user.CommitEmail
 		result.EmailSource = "commit"
-		// Drain event goroutine.
-		<-eventCh
 		return result
 	}
 
-	er := <-eventCh
-	if er.err == nil {
-		if er.email != "" {
-			result.Email = er.email
-			result.EmailSource = "events"
+	// 3. Target-repo commits — the stargazer may be a contributor to the very
+	// repo we're scraping.
+	if cfg.targetOwner != "" && cfg.targetRepo != "" {
+		repoFull := cfg.targetOwner + "/" + cfg.targetRepo
+		scanned[repoFull] = true
+		if email := firstRealEmailInCommits(client, repoFull, star.User.Login); email != "" {
+			result.Email = email
+			result.EmailSource = "commit"
 			return result
-		}
-		cap := 3
-		for _, repoName := range er.repos {
-			if cap == 0 {
-				break
-			}
-			if scanned[repoName] {
-				continue
-			}
-			scanned[repoName] = true
-			cap--
-			if email := firstRealEmailInCommits(client, repoName, star.User.Login); email != "" {
-				result.Email = email
-				result.EmailSource = "commit"
-				return result
-			}
 		}
 	}
 
@@ -519,16 +517,17 @@ func processUser(client *gh.Client, star gh.StarEntry, cfg workerCfg) Result {
 		return m
 	}
 
-	// Goroutine A: steps 4+5 — own repos then forked repos.
+	// Goroutine A: steps 4+5 — own repos then forked repos. Skipped entirely
+	// when the user has no public repos (nothing to scan) or both caps are 0.
 	go func() {
-		if cfg.maxRepos == 0 && cfg.maxForkRepos == 0 {
+		if (cfg.maxRepos == 0 && cfg.maxForkRepos == 0) || result.PublicRepos == 0 {
 			parallelCh <- repoEmailResult{}
 			return
 		}
 		localScanned := copyScanned()
 		var repos []gh.Repo
-		if pr, ok := cfg.prefetchedRepos[star.User.Login]; ok && pr != nil {
-			repos = pr
+		if cfg.userRepos != nil {
+			repos = cfg.userRepos
 		} else {
 			repos, _ = client.GetUserRepos(star.User.Login)
 		}

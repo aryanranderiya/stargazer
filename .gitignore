@@ -1,3 +1,9 @@
 .DS_Store
 
 stars/
+
+# stargazer-server runtime artifacts
+/data/
+/out/
+stargazer-server
+deploy/.env

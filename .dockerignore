@@ -1,0 +1,21 @@
+# scrape output / local artifacts — never needed in the image
+stars/
+out/
+data/
+*.csv
+
+# local binaries
+stargazer
+stargazer-server
+stargazer-linux
+
+# python helper(s) and caches
+*.py
+__pycache__/
+open
+
+# vcs & docs
+.git/
+.github/
+*.md
+deploy/.env

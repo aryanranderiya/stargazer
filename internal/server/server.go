@@ -1,0 +1,288 @@
+package server
+
+import (
+	"context"
+	_ "embed"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	gh "stargazer/internal/github"
+	"stargazer/internal/repoqueue"
+	"stargazer/internal/repos"
+	"stargazer/internal/scraper"
+)
+
+//go:embed web/index.html
+var dashboardHTML []byte
+
+// Server exposes the dashboard and JSON API.
+type Server struct {
+	cfg      Config
+	queue    *repoqueue.Queue
+	runner   *Runner
+	settings *SettingsStore
+	stats    *StatsStore
+	repos    *RepoStore
+	recent   *RecentStore
+	audience *atomic.Int64
+	http     *http.Server
+
+	// Cached rate-limit probe (refreshed at most every rlTTL) so the dashboard
+	// polling /api/ratelimits doesn't hit GitHub's /rate_limit on every tick.
+	rlMu    sync.Mutex
+	rlCache []gh.RateLimitStatus
+	rlAt    time.Time
+}
+
+// New builds the HTTP server and routes.
+func New(cfg Config, q *repoqueue.Queue, runner *Runner, settings *SettingsStore, stats *StatsStore, repoStore *RepoStore, recent *RecentStore, audience *atomic.Int64) *Server {
+	s := &Server{cfg: cfg, queue: q, runner: runner, settings: settings, stats: stats, repos: repoStore, recent: recent, audience: audience}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/api/status", s.handleStatus)
+	mux.HandleFunc("/api/history", s.handleHistory)
+	mux.HandleFunc("/api/contacts", s.handleContacts)
+	mux.HandleFunc("/api/settings", s.handleSettings)
+	mux.HandleFunc("/api/scrape", s.handleScrape)
+	mux.HandleFunc("/api/queue", s.handleQueue)
+	mux.HandleFunc("/api/ratelimits", s.handleRateLimits)
+	s.http = &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	return s
+}
+
+// ListenAndServe starts the HTTP server.
+func (s *Server) ListenAndServe() error { return s.http.ListenAndServe() }
+
+// Shutdown gracefully stops the HTTP server.
+func (s *Server) Shutdown(ctx context.Context) error { return s.http.Shutdown(ctx) }
+
+func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(dashboardHTML)
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "time": time.Now().UTC()})
+}
+
+func (s *Server) queueOrder() []string {
+	targets := s.queue.AllTargets()
+	order := make([]string, len(targets))
+	for i, t := range targets {
+		order[i] = t.Owner + "/" + t.Repo
+	}
+	return order
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
+	totals, history := s.stats.Snapshot()
+	var lastRun *RunReport
+	if len(history) > 0 {
+		lastRun = history[0]
+	} else {
+		lastRun = s.runner.Last()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"running":   s.runner.Running(),
+		"queue":     s.queue.Snapshot(),
+		"repos":     s.repos.Snapshot(s.queueOrder()),
+		"settings":  s.settings.Get(),
+		"totals":        totals,
+		"audienceTotal": s.audience.Load(),
+		"lastRun":       lastRun,
+		"tokens":        len(s.cfg.Tokens),
+		"listId":    s.cfg.EmailListID,
+		"emailApi":  s.cfg.EmailAPIURL,
+		"source":    s.cfg.Source,
+		"timezone":  time.Now().Format("MST"),
+		"serverNow": time.Now(),
+	})
+}
+
+// handleRateLimits reports per-token rate-limit utilization (REST core + GraphQL),
+// so the dashboard can show how much of each token's budget we're actually using.
+// Cached for rlTTL to avoid probing GitHub on every poll.
+func (s *Server) handleRateLimits(w http.ResponseWriter, _ *http.Request) {
+	const rlTTL = 15 * time.Second
+	s.rlMu.Lock()
+	if time.Since(s.rlAt) > rlTTL || s.rlCache == nil {
+		s.rlCache = s.runner.RateLimits()
+		s.rlAt = time.Now()
+	}
+	statuses := s.rlCache
+	s.rlMu.Unlock()
+
+	type pool struct {
+		Used      int   `json:"used"`
+		Limit     int   `json:"limit"`
+		Remaining int   `json:"remaining"`
+		ResetIn   int   `json:"resetIn"` // seconds until reset
+	}
+	type tokenRL struct {
+		Token   string `json:"token"`
+		Core    pool   `json:"core"`
+		GraphQL pool   `json:"graphql"`
+	}
+	mk := func(r gh.RateLimitResource) pool {
+		ri := int(time.Until(r.Reset).Seconds())
+		if ri < 0 {
+			ri = 0
+		}
+		return pool{Used: r.Limit - r.Remaining, Limit: r.Limit, Remaining: r.Remaining, ResetIn: ri}
+	}
+	out := make([]tokenRL, 0, len(statuses))
+	for i, st := range statuses {
+		tok := st.Token
+		if tok == "" {
+			tok = fmt.Sprintf("token-%d", i+1)
+		}
+		out = append(out, tokenRL{Token: tok, Core: mk(st.Core), GraphQL: mk(st.GraphQL)})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tokens": out, "cachedAt": s.rlAt})
+}
+
+func (s *Server) handleHistory(w http.ResponseWriter, _ *http.Request) {
+	_, history := s.stats.Snapshot()
+	writeJSON(w, http.StatusOK, history)
+}
+
+// handleContacts serves the live recently-scraped contacts, filterable by
+// ?repo= and ?status=, with per-status counts.
+func (s *Server) handleContacts(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit := 200
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	rows, counts, repos := s.recent.Snapshot(q.Get("repo"), q.Get("status"), limit)
+	writeJSON(w, http.StatusOK, map[string]any{"contacts": rows, "counts": counts, "repos": repos})
+}
+
+// handleQueue: GET snapshot+progress, POST to add repos, DELETE to remove one.
+func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{
+			"queue": s.queue.Snapshot(),
+			"repos": s.repos.Snapshot(s.queueOrder()),
+		})
+	case http.MethodPost:
+		var body struct {
+			Repos []string `json:"repos"`
+			Text  string   `json:"text"`
+			Repo  string   `json:"repo"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		raw := strings.Join(body.Repos, "\n") + "\n" + body.Text + "\n" + body.Repo
+		targets, warnings := repos.ParseList(raw)
+		if len(targets) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "no valid owner/repo entries", "warnings": warnings})
+			return
+		}
+		added, err := s.queue.Add(targets)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		go s.runner.RefreshTotals(targets) // populate star totals for the dashboard
+		writeJSON(w, http.StatusOK, map[string]any{"added": added, "warnings": warnings, "queue": s.queue.Snapshot()})
+	case http.MethodDelete:
+		var body struct {
+			Repo string `json:"repo"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		owner, repo, _ := strings.Cut(strings.TrimSpace(body.Repo), "/")
+		if owner == "" || repo == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "repo must be owner/repo"})
+			return
+		}
+		removed, err := s.queue.Remove(owner, repo)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"removed": removed, "queue": s.queue.Snapshot()})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "GET, POST or DELETE"})
+	}
+}
+
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, s.settings.Get())
+	case http.MethodPost, http.MethodPatch, http.MethodPut:
+		var patch SettingsPatch
+		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, s.settings.Update(patch))
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "GET or POST"})
+	}
+}
+
+// handleScrape triggers a run asynchronously. With no body it uses the queue;
+// with {"repo":"owner/repo"} or {"repos":["a/b","c/d"]} it scrapes those
+// specific repos without advancing the queue cursor.
+func (s *Server) handleScrape(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST only"})
+		return
+	}
+	var body struct {
+		Repo  string   `json:"repo"`
+		Repos []string `json:"repos"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+
+	parts := append([]string{}, body.Repos...)
+	if strings.TrimSpace(body.Repo) != "" {
+		parts = append(parts, body.Repo)
+	}
+	var override []scraper.RepoTarget
+	if len(parts) > 0 {
+		targets, warn := repos.ParseTargets(strings.Join(parts, ","))
+		if warn != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": warn})
+			return
+		}
+		override = targets
+	}
+
+	// No global "already running" reject: repos scrape concurrently now, and
+	// ScrapeRepo's per-repo lock skips any repo already in flight.
+	go func() {
+		if _, err := s.runner.Run("manual", override); err != nil {
+			log.Printf("manual run error: %v", err)
+		}
+	}()
+	writeJSON(w, http.StatusAccepted, map[string]any{"started": true, "repos": override})
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(v)
+}
